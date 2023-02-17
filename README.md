@@ -17,22 +17,24 @@
     │   ├── gen_stat.py               # 把 find_threshold.py 產生的檔案，畫出相關測試統計圖表
     │   ├── wmseg_dataparallel.py     # 多 GPU 時支援
     │
-    ├── Trace characteristic    # 計算每筆 trace 數據的
-    │   ├── snr.py              # 計算 SNR
-    │   ├── calc.py             # 計算新制震度
+    ├── Trace characteristic          # 計算每筆 trace 數據的
+    │   ├── snr.py                    # 計算 SNR
+    │   ├── calc.py                   # 計算新制震度
     │
-    ├── Pretrained embedding scripts    # 使用 time-series pretrain embedding 會用到
-    │   ├── emb_train.py                # Training
-    │   ├── emb_model.py                # Pretrained model
-    │   ├── emb_loss.py                 # Pretrained loss functions
-    │   ├── modules.py                  # Pretrained model related modules
+    ├── Pretrained embedding scripts  # 使用 time-series pretrain embedding 會用到
+    │   ├── emb_train.py              # Training
+    │   ├── emb_model.py              # Pretrained model
+    │   ├── emb_loss.py               # Pretrained loss functions
+    │   ├── modules.py                # Pretrained model related modules
     │   
-    ├── TemporalSegmentation    # Temporal Segmentation modules
+    ├── TemporalSegmentation          # Temporal Segmentation modules
     │   ├── ...
     │   
-    ├── conformer                   # conformer model
+    ├── conformer                     # conformer model
     │   ├── ...
     │   
+    ├── seisbench                     # seisbench 套件
+    │
     └── README.md
 
 ---
