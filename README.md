@@ -2,9 +2,9 @@
 
 ### Related files
 * [Experimental Results](https://docs.google.com/spreadsheets/d/1GNUUGtq8gjdsK_Qu6LqYDZW5WN3AU1dzf668a1C6SDk/edit#gid=0)
-
+* [Download the datasets]()
 ---
-## File structures
+### File structures
  
     ├── Basic scripts                 # 基本訓練模型都會用到的
     │   ├── train.py                  # Training
@@ -34,3 +34,48 @@
     │   ├── ...
     │   
     └── README.md
+
+---
+### Usage
+
+**Step1: Training the picking model from scratch**
+* The *train.log* and *checkpoint.pt* will saved at **./results/path_to_checkpoint**
+```shell
+python train.py \
+--model_opt <type_of_model> --save_path <path_to_checkpoint> --lr <lr> --batch_size <batch_size> ...
+```
+
+**Step2: Testing the trained model and finding the best picking rule**
+* Configs is almost same with the training step.
+* The threshold.log will saved at **./results/path_to_checkpoint/all**
+```shell
+python find_threshold.py \
+--model_opt <type_of_model> ...
+```
+
+**Step3: Generating the statistical results of the testing results**
+* Results will saved at **./results/path_to_checkpoint/all**
+```shell
+python gen_stat.py --save_path <path_to_checkpoint>
+```
+
+**Step4: Plotting the testing results**
+* Configs is almost same with the testing step.
+* Results will saved at **./plot/path_to_checkpoint**
+```shell
+python plot.py --plot True --model_opt <type_of_model> ...
+```
+
+**Step5: Testing the model with the original seismogram rather than sliced one**
+* The **whole_test_all_{criteria}.log** will saved at **./results/path_to_checkpoint/all**
+* Configs is almost same with the testing step.
+```shell
+python whole_sample_test.py --plot <Plot_or_not> --model_opt <type_of_model> \
+--criteria <criteria_to_filter_prediction> ...
+```
+---
+### Appendix
+****
+**Compare the statistical with two different models**
+
+**Time-series representation pretraining**
