@@ -35,7 +35,8 @@ def parse_args():
     parser.add_argument('--intensity_upperbound', type=float, default=7)
     parser.add_argument('--start_idx', type=int, default=0)
     parser.add_argument('--p_timestep', type=int, default=750)
-
+    parser.add_argument('--snr_threshold', type=float, default=-1)
+    
     # dataset hyperparameters
     parser.add_argument('--aug', type=bool, default=False)
     parser.add_argument('--level', type=int, default=-1)

@@ -404,9 +404,9 @@ class SingleP_Conformer(nn.Module):
                     elif self.query_type == 'stft':
                         stft_pos_emb = self.stft_pos_emb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
                         stft_q = self.crossAttn_stft_posEmb(stft_pos_emb, stft, stft)
-                        print(stft_pos_emb.shape, stft_q.shape, stft.shape)
+                        
                         dec_out = self.crossAttnLayer[i](stft_q, out, out)
-                        print(dec_out.shape)
+                        
                 else:
                     dec_out = self.crossAttnLayer[i](dec_out, out, out)
                 
@@ -799,11 +799,26 @@ class GRADUATE(nn.Module):
         # =========================================== #
         # encoded representation 會當作 decoder's Key, Value
         self.rep_KV = rep_KV
-        
+        self.seg_proj_type = seg_proj_type
+
         self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
-        self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
-        self.seg_crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
-        self.seg_projector = nn.Linear(conformer_class, n_segmentation)
+        if seg_proj_type == 'crossattn':
+            self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
+            self.seg_crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.seg_projector = nn.Linear(conformer_class, n_segmentation)
+        elif seg_proj_type == 'upsample':
+            self.upconv = nn.Sequential(nn.Upsample(1500),
+                                        nn.Conv1d(conformer_class, conformer_class, 3, padding='same'),
+                                        nn.ReLU(),
+                                        nn.Upsample(2000),
+                                        nn.Conv1d(conformer_class, conformer_class, 3, padding='same'),
+                                        nn.ReLU(),
+                                        nn.Upsample(2500),
+                                        nn.Conv1d(conformer_class, conformer_class, 5, padding='same'),
+                                        nn.ReLU(),
+                                        nn.Upsample(3000),
+                                        nn.Conv1d(conformer_class, conformer_class, 5, padding='same'),
+                                        nn.ReLU()) 
         self.softmax = nn.Softmax(dim=-1)
         
         # =========================================== #
@@ -874,10 +889,16 @@ class GRADUATE(nn.Module):
         out, _ = self.conformer(wave, 3000)
         
         # temporal segmentation
-        seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
-        seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
-        seg_out = self.seg_projector(seg_crossattn_out)
-        seg_out = self.softmax(seg_out)
+        if self.seg_proj_type == 'crossattn':
+            seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
+            seg_out = self.seg_projector(seg_crossattn_out)
+            seg_out = self.softmax(seg_out)
+        elif self.seg_proj_type == 'upsample':
+            seg_out = self.upconv(out.permute(0,2,1)).permute(0,2,1)
+            seg_out = self.softmax(seg_out)
+        else:
+            seg_out = 0.0
         
         # cross_attention
         if self.cross_attn_type == 1:

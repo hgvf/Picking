@@ -647,9 +647,9 @@ if __name__ == '__main__':
             abs_diff = abs_diff[abs_diff <= 50]
 
         if opt.level == -1:
-            threshold_path = 'threshold.log'
+            threshold_path = 'threshold_-1.log'
         else:
-            threshold_path = 'threshold' + str(opt.level) + '.log'
+            threshold_path = 'threshold_' + str(opt.level) + '.log'
         with open(os.path.join(output_dir, threshold_path), 'r') as f:
             res = f.readlines()
 

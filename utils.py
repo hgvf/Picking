@@ -499,12 +499,16 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
         weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
         picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking.squeeze().to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device))
 
-        # temporal segmentation loss
-        # prediction: (batch, n_segmentation, wavelength)
-        # ground-truth: (batch, wavelength)
-        segmentation_loss = F.cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device), label_smoothing=opt.label_smoothing)
+        if opt.seg_proj_type != 'none':
+            # temporal segmentation loss
+            # prediction: (batch, n_segmentation, wavelength)
+            # ground-truth: (batch, wavelength)
+            segmentation_loss = F.cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device), label_smoothing=opt.label_smoothing)
+            print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
 
-        loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss
+            loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss
+        else:
+            loss = picking_loss
 
     return loss
 
