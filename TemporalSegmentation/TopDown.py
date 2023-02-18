@@ -86,7 +86,7 @@ def Clean_TS(O_Integ_TS,double):
         Integ_TS[i,:] = Integ_TS[i,:]-minVal
         if double != 2:
             sumVal=sum(Integ_TS[i,:])/1000
-            print(sumVal)
+            # print(sumVal)
             Integ_TS[i,:]=Integ_TS[i,:]/sumVal
         if double == 1:
             maxVal=max(Integ_TS[i,:])

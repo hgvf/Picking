@@ -789,7 +789,7 @@ class AntiCopy_Conformer(nn.Module):
         return out
 
 class GRADUATE(nn.Module):
-    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, n_segmentation=5, decoder_type='cross_attn', output_layer_type='fc', rep_KV=True):
+    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, n_segmentation=5, decoder_type='crossattn', output_layer_type='fc', rep_KV=True):
         super(GRADUATE, self).__init__()
         
         dim_stft = 64
@@ -846,7 +846,7 @@ class GRADUATE(nn.Module):
         # =========================================== #
         #                   Decoder                   #
         # =========================================== #        
-        if decoder_type == 'cross_attn':
+        if decoder_type == 'crossattn':
             self.decoder = nn.ModuleList([cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
                                                 for _ in range(dec_layers)]
                                                 )

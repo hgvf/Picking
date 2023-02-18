@@ -303,8 +303,8 @@ def basic_augmentations(opt, phase_dict, test=False):
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
                 sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
                 sbg.STFT(),
-                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
                 sbg.CharStaLta(),
+                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
@@ -317,8 +317,8 @@ def basic_augmentations(opt, phase_dict, test=False):
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
                 sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
                 sbg.STFT(),
-                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
                 sbg.CharStaLta(),
+                sbg.Temporal_segmentation(n_segmentation=opt.n_segmentation),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
@@ -497,12 +497,12 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
 
         # picking loss
         weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
-        picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking.to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device))
+        picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking.squeeze().to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device))
 
         # temporal segmentation loss
         # prediction: (batch, n_segmentation, wavelength)
         # ground-truth: (batch, wavelength)
-        segmentation_loss = F.cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt.to(device), label_smoothing=opt.label_smoothing_factor)
+        segmentation_loss = F.cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device), label_smoothing=opt.label_smoothing)
 
         loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss
 
