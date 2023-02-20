@@ -727,7 +727,7 @@ class CharStaLta:
     def __call__(self, state_dict):
         # waveforms: (3, 3000)
         waveforms, metadata = state_dict[self.key[0]]
-
+        
         if self.keep_ori:
             if 'ori_X' not in state_dict.keys():
                 state_dict['ori_X'] = (waveforms, metadata)
@@ -935,9 +935,9 @@ class TemporalSegmentation:
         waveforms, metadata = state_dict[self.key[0]]
 
         # using 12-dim vector for temporal segmentation
-        out = TopDown(waveforms, self.n_segmentation-1, self.step)
+        out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
         seg_edge = sorted(out[0])
-
+        
         # labeled the ground-truth vector
         gt = np.zeros(waveforms.shape[-1])
         for i, edge in enumerate(seg_edge):
@@ -949,9 +949,9 @@ class TemporalSegmentation:
 
                 if i == len(seg_edge) - 1:
                     gt[edge:] = i
-
+        
         # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
         gt = np.expand_dims(gt, axis=0)
-
-        state_dict[self.key[0]] = (waveforms, metadata)
+        
+        state_dict[self.key[1]] = (waveforms, metadata)
         state_dict['seg'] = gt

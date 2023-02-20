@@ -63,7 +63,10 @@ def parse_args():
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--encoder_type', type=str, default='conformer')
     parser.add_argument('--decoder_type', type=str, default='crossattn')
-    
+    parser.add_argument('--query_type', type=str, default='pos_emb')
+    parser.add_argument('--intensity_MT', type=bool, default=False)
+    parser.add_argument('--label_smoothing', type=float, default=0.1)
+
     # MGAN block
     parser.add_argument('--dim_spectrogram', type=str, default='1D')
     parser.add_argument('--MGAN_normtype', type=str, default='mean')
@@ -77,6 +80,13 @@ def parse_args():
     parser.add_argument('--pretrained_emb', type=str)
     parser.add_argument('--emb_dim', type=int, default=64)
     parser.add_argument('--n_class', type=int, default=16)
+
+    # GRADUATE model
+    parser.add_argument('--cross_attn_type', type=int, default=1)
+    parser.add_argument('--n_segmentation', type=int, default=5)
+    parser.add_argument('--output_layer_type', type=str, default='fc')
+    parser.add_argument('--rep_KV', type=bool, default=False)
+    parser.add_argument('--segmentation_ratio', type=float, default=0.5)
 
     opt = parser.parse_args()
 
@@ -242,9 +252,9 @@ def set_generators(opt):
         tsmip_dev, tsmip_test = tsmip.dev(), tsmip.test()
         stead_dev, stead_test = stead.dev(), stead.test()
 
-        train = cwbsn_train + tsmip_train + stead_train
         dev = cwbsn_dev + tsmip_dev + stead_dev
-        
+        test = cwbsn_test + tsmip_test + stead_test
+
     print(f'total traces -> dev: {len(dev)}, test: {len(test)}')
 
     dev_generator = sbg.GenericGenerator(dev)

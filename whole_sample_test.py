@@ -49,7 +49,8 @@ def parse_args():
     parser.add_argument('--p_timestep', type=int, default=750)
     parser.add_argument('--window_size', type=int, default=3000)
     parser.add_argument('--step_size', type=int, default=100)
-
+    parser.add_argument('--snr_threshold', type=float, default=-1)
+    
     # dataset hyperparameters
     parser.add_argument('--aug', type=bool, default=False)
     parser.add_argument('--level', type=int, default=-1)
@@ -87,6 +88,17 @@ def parse_args():
     parser.add_argument('--MGAN_l', type=int, default=10)
     parser.add_argument('--emb_dim', type=int, default=64)
     parser.add_argument('--n_class', type=int, default=128)
+    parser.add_argument('--query_type', type=str, default='pos_emb')
+    parser.add_argument('--intensity_MT', type=bool, default=False)
+    parser.add_argument('--label_smoothing', type=float, default=0.1)
+    
+    # GRADUATE model
+    parser.add_argument('--cross_attn_type', type=int, default=1)
+    parser.add_argument('--n_segmentation', type=int, default=5)
+    parser.add_argument('--output_layer_type', type=str, default='fc')
+    parser.add_argument('--rep_KV', type=str, default='False')
+    parser.add_argument('--segmentation_ratio', type=float, default=0.3)
+    parser.add_argument('--seg_proj_type', type=str, default='crossattn')
 
     opt = parser.parse_args()
 

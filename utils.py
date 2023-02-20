@@ -318,7 +318,7 @@ def basic_augmentations(opt, phase_dict, test=False):
                 sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
                 sbg.STFT(),
                 sbg.CharStaLta(),
-                sbg.Temporal_segmentation(n_segmentation=opt.n_segmentation),
+                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
@@ -336,14 +336,21 @@ def load_model(opt, device):
     elif opt.model_opt == 'phaseNet':
         model = sbm.PhaseNet(in_channels=3, classes=2, phases='NP')
     elif opt.model_opt == 'conformer':
-        model = SingleP_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, query_type=opt.query_type)
+        rep_KV = True if opt.rep_KV == 'True' else False
+        model = SingleP_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, 
+                    d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, query_type=opt.query_type,
+                    rep_KV=opt.rep_KV)
     elif opt.model_opt == 'conformer_stft' or opt.model_opt == 'conformer_intensity':
         # model =  SingleP_Conformer_spectrogram(dim_spectrogram=opt.dim_spectrogram, conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l)
-        model = SingleP_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, query_type=opt.query_type, intensity_MT=opt.intensity_MT)
+        model = SingleP_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, 
+                    d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, query_type=opt.query_type, 
+                    intensity_MT=opt.intensity_MT)
     elif opt.model_opt == 'transformer':
         model = SingleP_transformer_window(d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, window_size=opt.window_size)
     elif opt.model_opt == 'conformer_embedding':
-        model = SingleP_WaveformEmb_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, emb_dim=opt.emb_dim, n_class=opt.n_class)
+        model = SingleP_WaveformEmb_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, 
+                    d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, emb_dim=opt.emb_dim, 
+                    n_class=opt.n_class)
     elif opt.model_opt == 'pretrained_embedding':
         model = SingleP_WaveformEmb(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, emb_dim=opt.emb_dim, n_class=opt.n_class,
                                     encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, emb_type=opt.emb_type, pretrained_emb=opt.pretrained_emb, emb_d_ffn=opt.emb_d_ffn, emb_layers=opt.emb_layers, emb_model_opt=opt.emb_model_opt)
@@ -356,7 +363,10 @@ def load_model(opt, device):
         model = RED_PAN().double()
         # model = RED_PAN()
     elif opt.model_opt == 'GRADUATE':
-        model = GRADUATE(conformer_class=opt.conformer_class, d_ffn=opt.conformer_class, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, n_segmentation=opt.n_segmentation, decoder_type=opt.decoder_type, output_layer_type=opt.output_layer_type, rep_KV=opt.rep_KV)
+        rep_KV = True if opt.rep_KV == 'True' else False
+        model = GRADUATE(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, 
+                    dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, n_segmentation=opt.n_segmentation, 
+                    decoder_type=opt.decoder_type, output_layer_type=opt.output_layer_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type)
     
     return model.to(device)
 
@@ -494,7 +504,7 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
     elif opt.model_opt == 'GRADUATE':
         pred_seg, pred_picking = pred
         gt_seg, gt_picking = gt
-
+        
         # picking loss
         weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
         picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking.squeeze().to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device))
@@ -503,7 +513,7 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
             # temporal segmentation loss
             # prediction: (batch, n_segmentation, wavelength)
             # ground-truth: (batch, wavelength)
-            segmentation_loss = F.cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device), label_smoothing=opt.label_smoothing)
+            segmentation_loss = F.cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device).to(torch.long), label_smoothing=opt.label_smoothing)
             print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
 
             loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss

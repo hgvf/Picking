@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument('--gaussian_noise_prob', type=float, default=0.5)
     parser.add_argument('--channel_dropout_prob', type=float, default=0.3)
     parser.add_argument('--adding_gap_prob', type=float, default=0.2)
-    parser.add_argument('--shift_to_end_prob', type=float, default=0.2)
+    parser.add_argument('--shift_to_end_prob', type=float, default=0.0)
     parser.add_argument('--mask_afterP', type=float, default=0.0)
 
     # seisbench options
@@ -102,8 +102,9 @@ def parse_args():
     parser.add_argument('--cross_attn_type', type=int, default=1)
     parser.add_argument('--n_segmentation', type=int, default=5)
     parser.add_argument('--output_layer_type', type=str, default='fc')
-    parser.add_argument('--rep_KV', type=bool, default=False)
-    parser.add_argument('--segmentation_ratio', type=float, default=0.5)
+    parser.add_argument('--rep_KV', type=str, default='False')
+    parser.add_argument('--segmentation_ratio', type=float, default=0.3)
+    parser.add_argument('--seg_proj_type', type=str, default='crossattn')
 
     opt = parser.parse_args()
 
@@ -316,7 +317,7 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
     train_loss = 0.0
     min_loss = 1000
     task1_loss, task2_loss = 0.0, 0.0
-
+    import matplotlib.pyplot as plt
     train_loop = tqdm(enumerate(dataloader), total=len(dataloader))
     for idx, (data) in train_loop:
         if opt.model_opt == 'basicphaseAE':
@@ -337,6 +338,12 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
             elif opt.model_opt == 'conformer_intensity':
                 out, out_MT = model(data['X'].to(device))
             elif opt.model_opt == 'GRADUATE':
+                # plt.subplot(211)
+                # plt.plot(data['X'][0][:3].T)
+                # plt.subplot(212)
+                # plt.plot(data['X'][1][:3].T)
+                # plt.savefig(f"{idx}.png")
+                # plt.clf()
                 out_seg, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
 
             else:
@@ -345,7 +352,6 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
             if opt.model_opt == 'conformer_intensity':
                 loss = loss_fn(opt, out, data['y'], device, intensity=(out_MT, data['intensity']))
             elif opt.model_opt == 'GRADUATE':
-                data['seg'] = torch.LongTensor(np.ones((out.shape[0], 3000)))
                 loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
             else:
                 loss = loss_fn(opt, out, data['y'], device)

@@ -280,7 +280,7 @@ class SingleP_transformer_window(nn.Module):
         return scores
 
 class SingleP_Conformer(nn.Module):
-    def __init__(self, conformer_class, d_model, d_ffn, n_head, enc_layers, dec_layers, norm_type, l, decoder_type='crossattn', encoder_type='conformer', query_type='pos_emb', intensity_MT=False):
+    def __init__(self, conformer_class, d_model, d_ffn, n_head, enc_layers, dec_layers, norm_type, l, rep_KV, decoder_type='crossattn', encoder_type='conformer', query_type='pos_emb', intensity_MT=False):
         super(SingleP_Conformer, self).__init__()
 
         assert encoder_type in ['conformer', 'transformer'], "encoder_type must be one of ['conformer', 'transformer']"
@@ -313,6 +313,7 @@ class SingleP_Conformer(nn.Module):
         self.decoder_type = decoder_type
         self.dec_layers = dec_layers
         self.intensity_MT = intensity_MT
+        self.rep_KV = rep_KV
         wave_length = 3000
 
         if intensity_MT:
@@ -408,7 +409,10 @@ class SingleP_Conformer(nn.Module):
                         dec_out = self.crossAttnLayer[i](stft_q, out, out)
                         
                 else:
-                    dec_out = self.crossAttnLayer[i](dec_out, out, out)
+                    if self.rep_KV:
+                        dec_out = self.crossAttnLayer[i](dec_out, out, out)
+                    else:
+                        dec_out = self.crossAttnLayer[i](dec_out, dec_out, dec_out)
                 
         elif self.decoder_type == 'MGAN':
             # cross-attention
@@ -424,7 +428,10 @@ class SingleP_Conformer(nn.Module):
 
             # MGANs
             for i in range(self.dec_layers):
-                dec_out = self.MGANs[i](crossattn_out, crossattn_out, crossattn_out)
+                if self.rep_KV:
+                    dec_out = self.MGANs[i](crossattn_out, out, out)
+                else:
+                    dec_out = self.MGANs[i](crossattn_out, crossattn_out, crossattn_out)
 
         out = self.sigmoid(self.fc(dec_out))
 
@@ -789,7 +796,7 @@ class AntiCopy_Conformer(nn.Module):
         return out
 
 class GRADUATE(nn.Module):
-    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, n_segmentation=5, decoder_type='crossattn', output_layer_type='fc', rep_KV=True):
+    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, seg_proj_type='crossattn', n_segmentation=5, decoder_type='crossattn', output_layer_type='fc', rep_KV=True):
         super(GRADUATE, self).__init__()
         
         dim_stft = 64
@@ -800,7 +807,7 @@ class GRADUATE(nn.Module):
         # encoded representation 會當作 decoder's Key, Value
         self.rep_KV = rep_KV
         self.seg_proj_type = seg_proj_type
-
+        
         self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
         if seg_proj_type == 'crossattn':
             self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
@@ -884,7 +891,12 @@ class GRADUATE(nn.Module):
     def forward(self, wave, stft):
         # wave: (batch, 3000, 12)
         wave = wave.permute(0,2,1)
-        
+
+        # check whether there is nan in wave, padding with zero 
+        # isNaN = torch.isnan(wave)
+        # if torch.any(isNaN):
+        #     wave[isNaN] = 0
+        #     print('nan!')
         # encoded representation: (batch, 749, conformer_class)
         out, _ = self.conformer(wave, 3000)
         
