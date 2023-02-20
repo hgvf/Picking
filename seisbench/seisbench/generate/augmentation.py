@@ -921,7 +921,7 @@ class Intensity:
 
 
 class TemporalSegmentation:
-    def __init__(self, n_segmentation, axis=-1, key='X', step=30):
+    def __init__(self, n_segmentation, axis=-1, key='X', step=1):
         if isinstance(key, str):
             self.key = (key, key)
         else:
@@ -936,6 +936,9 @@ class TemporalSegmentation:
 
         # using 12-dim vector for temporal segmentation
         out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
+        if out[-1] != (self.n_segmentation-1):
+            out = TopDown(waveforms.copy(), out[-1], self.step)
+
         seg_edge = sorted(out[0])
         
         # labeled the ground-truth vector
