@@ -100,7 +100,7 @@ def parse_args():
     
     # GRADUATE model
     parser.add_argument('--cross_attn_type', type=int, default=1)
-    parser.add_argument('--n_segmentation', type=int, default=5)
+    parser.add_argument('--n_segmentation', type=int, default=4)
     parser.add_argument('--output_layer_type', type=str, default='fc')
     parser.add_argument('--rep_KV', type=str, default='False')
     parser.add_argument('--segmentation_ratio', type=float, default=0.3)

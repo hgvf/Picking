@@ -796,10 +796,10 @@ class AntiCopy_Conformer(nn.Module):
         return out
 
 class GRADUATE(nn.Module):
-    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, seg_proj_type='crossattn', n_segmentation=5, decoder_type='crossattn', output_layer_type='fc', rep_KV=True):
+    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, seg_proj_type='crossattn', decoder_type='crossattn', output_layer_type='fc', rep_KV=True):
         super(GRADUATE, self).__init__()
         
-        dim_stft = 64
+        dim_stft = 32
         
         # =========================================== #
         #                   Encoder                   #
@@ -811,8 +811,8 @@ class GRADUATE(nn.Module):
         self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
         if seg_proj_type == 'crossattn':
             self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
-            self.seg_crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
-            self.seg_projector = nn.Linear(conformer_class, n_segmentation)
+            self.seg_crossattn = cross_attn(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class)
+            self.seg_projector = nn.Linear(conformer_class, 1)
         elif seg_proj_type == 'upsample':
             self.upconv = nn.Sequential(nn.Upsample(1500),
                                         nn.Conv1d(conformer_class, conformer_class, 3, padding='same'),

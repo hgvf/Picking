@@ -14,6 +14,8 @@ from calc import *
 sys.path.append('/mnt/disk4/weiwei/picking_baseline/TemporalSegmentation/')
 from TopDown import *
 
+sys.path.append('/mnt/disk4/weiwei/RED-PAN/')
+from gen_tar import gen_tar_func
 
 class Normalize:
     """
@@ -810,7 +812,7 @@ class STFT:
         waveforms, metadata = state_dict[self.key[0]]
 
         acc = np.sqrt(waveforms[0]**2+waveforms[1]**2+waveforms[2]**2)
-        f, t, Zxx = scipy.signal.stft(acc, fs=1, nperseg=75, nfft=128, noverlap=20)        
+        f, t, Zxx = scipy.signal.stft(acc, nperseg=20, nfft=64)
         real = np.abs(Zxx.real).T
 
         # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
@@ -943,16 +945,15 @@ class TemporalSegmentation:
         
         # labeled the ground-truth vector
         gt = np.zeros(waveforms.shape[-1])
-        for i, edge in enumerate(seg_edge):
+        for edge in seg_edge:
+            if edge == waveforms.shape[-1] - 1:
+                continue
         
-            if i == 0:
-                gt[:edge] = i
-            else:
-                gt[seg_edge[i-1]:edge] = i
+            gt += gen_tar_func(waveforms.shape[-1], edge, 10)
+        
+        # the values in gt vector always <= 
+        gt[gt > 1] = 1
 
-                if i == len(seg_edge) - 1:
-                    gt[edge:] = i
-        
         # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
         gt = np.expand_dims(gt, axis=0)
         

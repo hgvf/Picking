@@ -365,7 +365,7 @@ def load_model(opt, device):
     elif opt.model_opt == 'GRADUATE':
         rep_KV = True if opt.rep_KV == 'True' else False
         model = GRADUATE(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, 
-                    dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, n_segmentation=opt.n_segmentation, 
+                    dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, 
                     decoder_type=opt.decoder_type, output_layer_type=opt.output_layer_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type)
     
     return model.to(device)
@@ -511,9 +511,10 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
 
         if opt.seg_proj_type != 'none':
             # temporal segmentation loss
-            # prediction: (batch, n_segmentation, wavelength)
+            # prediction: (batch, wavelength, 1)
             # ground-truth: (batch, wavelength)
-            segmentation_loss = F.cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device).to(torch.long), label_smoothing=opt.label_smoothing)
+            weights = torch.add(torch.mul(gt_seg, opt.loss_weight), 1).to(device)
+            segmentation_loss = F.binary_cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device).to(torch.long), weight=weights)
             print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
 
             loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss
