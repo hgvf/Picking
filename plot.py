@@ -41,7 +41,8 @@ def parse_args():
     parser.add_argument('--aug', type=bool, default=False)
     parser.add_argument('--level', type=int, default=-1)
     parser.add_argument('--s_wave', type=bool, default=False)
-
+    parser.add_argument('--instrument', type=str, default='all')
+    
     # threshold
     parser.add_argument('--threshold_trigger', type=int, default=40)
     parser.add_argument('--sample_tolerant', type=int, default=50)
@@ -75,6 +76,15 @@ def parse_args():
     parser.add_argument('--MGAN_l', type=int, default=10)
     parser.add_argument('--emb_dim', type=int, default=64)
     parser.add_argument('--n_class', type=int, default=128)
+    parser.add_argument('--label_type', type=str, default='p')
+
+    # GRADUATE model
+    parser.add_argument('--cross_attn_type', type=int, default=2)
+    parser.add_argument('--n_segmentation', type=int, default=2)
+    parser.add_argument('--output_layer_type', type=str, default='fc')
+    parser.add_argument('--rep_KV', type=str, default='False')
+    parser.add_argument('--segmentation_ratio', type=float, default=0.35)
+    parser.add_argument('--seg_proj_type', type=str, default='crossattn')
 
     opt = parser.parse_args()
 
@@ -459,14 +469,21 @@ if __name__ == '__main__':
 
                     out = out_PS[0, 0].detach().squeeze().cpu().numpy()                    
                 else:
-                    out = model(data['X'])
+                    if opt.model_opt == 'GRADUATE':
+                        _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                    else:
+                        out = model(data['X'])
                     
                     if opt.model_opt == 'eqt':
                         out = out[1].squeeze().detach().numpy()
                     elif opt.model_opt == 'phaseNet':
                         out = out[0,0].detach().squeeze().cpu().numpy()
                     else:
-                        out = out.squeeze().detach().numpy()
+                        if opt.label_type == 'p':
+                            out = out.detach().squeeze().cpu().numpy()
+                        elif opt.label_type == 'other':
+                            out = out[:, :, 0].detach().squeeze().cpu().numpy()   
+                    
                     gt = data['y'][0, 0]
 
             a, b, c, d, e, f, pred_trigger, gt_trigger = evaluation(out, gt, opt.threshold_prob, opt.threshold_trigger, opt.sample_tolerant, opt.threshold_type)

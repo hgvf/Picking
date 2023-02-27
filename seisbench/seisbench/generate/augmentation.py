@@ -1,7 +1,7 @@
 import numpy as np
 import scipy.signal
 import copy
-
+import time
 # calc intensity
 from scipy.signal import butter, filtfilt
 from scipy import integrate
@@ -12,7 +12,7 @@ sys.path.append('/mnt/disk4/weiwei/picking_baseline/')
 from calc import *
 
 sys.path.append('/mnt/disk4/weiwei/picking_baseline/TemporalSegmentation/')
-from TopDown import *
+from TopDown_optimized import *
 
 sys.path.append('/mnt/disk4/weiwei/RED-PAN/')
 from gen_tar import gen_tar_func
@@ -592,7 +592,7 @@ class ShiftToEnd:
     """
 
     def __init__(
-        self, left=800, right=50, label_columns="trace_p_arrival_sample", key="X"
+        self, left=800, right=50, label_columns="trace_p_arrival_sample", key="X", n_segmentation=4, step=1
     ):
         if isinstance(key, str):
             self.key = (key, key)
@@ -602,18 +602,21 @@ class ShiftToEnd:
         self.left = left
         self.right = right
         self.label_columns = label_columns
+        self.n_segmentation = n_segmentation
+        self.step = step
 
     def __call__(self, state_dict):
         waveforms, metadata = state_dict[self.key[0]]
         backup_waveforms, backup_metadata = waveforms, metadata
         gt = state_dict["y"]
         tri = metadata[self.label_columns]
-
+                
         try:
             if tri == 0 or np.isnan(tri):
                 tri = 0
                 mean = np.mean(waveforms[:3, :], axis=1)
             else:
+                tri = int(tri)
                 mean = (
                     np.mean(waveforms[:3, : tri - 200], axis=1)
                     if tri - 200 >= 0
@@ -626,6 +629,7 @@ class ShiftToEnd:
             )
             remaining_wave = waveforms.shape[1] - new_tri
 
+            # shift the waveforms
             waveforms[0] = np.hstack(
                 (
                     mean[0].repeat(waveforms.shape[1] - remaining_wave),
@@ -644,7 +648,7 @@ class ShiftToEnd:
                     waveforms[2, tri : tri + remaining_wave],
                 )
             )
-
+            # shift the other features: characteristic, sta, lta
             if waveforms.shape[0] > 3:
                 for i in range(3, waveforms.shape[0]):
                     waveforms[i] = np.hstack(
@@ -653,7 +657,7 @@ class ShiftToEnd:
                             waveforms[i, tri : tri + remaining_wave],
                         )
                     )
-
+            # shift the label
             gt[0][0] = np.hstack(
                 (
                     np.zeros(gt[0].shape[1] - remaining_wave),
@@ -667,7 +671,45 @@ class ShiftToEnd:
                 )
             )
 
-        except:
+            # shift the temporal segmentation label
+            if 'seg' in state_dict.keys():
+                # using 12-dim vector for temporal segmentation
+                out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
+
+                if out[-1] != (self.n_segmentation-1):
+                    out = TopDown(waveforms.copy(), out[-1], self.step)
+
+                seg_edge = sorted(out[0])
+            
+                # labeled the ground-truth vector
+                seg_gt = np.zeros(waveforms.shape[-1])
+                for edge in seg_edge:
+                    if edge == waveforms.shape[-1] - 1:
+                        continue
+                
+                    seg_gt += gen_tar_func(waveforms.shape[-1], edge, 10)
+                
+                # the values in gt vector always <= 1
+                seg_gt[seg_gt > 1] = 1
+
+                # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
+                seg_gt = np.expand_dims(seg_gt, axis=0)
+
+                state_dict['seg'] = seg_gt
+                
+            # shift the stft 
+            if 'stft' in state_dict.keys():
+                acc = np.sqrt(waveforms[0]**2+waveforms[1]**2+waveforms[2]**2)
+                f, t, Zxx = scipy.signal.stft(acc, nperseg=20, nfft=64)
+                real = np.abs(Zxx.real).T
+
+                # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
+                # 移除一個 frequency component，將頻率維度湊到偶數個
+                real = np.expand_dims(real[:, :-1], axis=0)
+                state_dict['stft'] = real
+
+        except Exception as e:
+            # print(e)
             waveforms = backup_waveforms
             metadata = backup_metadata
 
@@ -938,11 +980,12 @@ class TemporalSegmentation:
 
         # using 12-dim vector for temporal segmentation
         out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
+
         if out[-1] != (self.n_segmentation-1):
             out = TopDown(waveforms.copy(), out[-1], self.step)
 
         seg_edge = sorted(out[0])
-        
+       
         # labeled the ground-truth vector
         gt = np.zeros(waveforms.shape[-1])
         for edge in seg_edge:
@@ -959,3 +1002,4 @@ class TemporalSegmentation:
         
         state_dict[self.key[1]] = (waveforms, metadata)
         state_dict['seg'] = gt
+

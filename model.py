@@ -280,7 +280,7 @@ class SingleP_transformer_window(nn.Module):
         return scores
 
 class SingleP_Conformer(nn.Module):
-    def __init__(self, conformer_class, d_model, d_ffn, n_head, enc_layers, dec_layers, norm_type, l, rep_KV, decoder_type='crossattn', encoder_type='conformer', query_type='pos_emb', intensity_MT=False):
+    def __init__(self, conformer_class, d_model, d_ffn, n_head, enc_layers, dec_layers, norm_type, l, rep_KV, decoder_type='crossattn', encoder_type='conformer', query_type='pos_emb', intensity_MT=False, label_type='p'):
         super(SingleP_Conformer, self).__init__()
 
         assert encoder_type in ['conformer', 'transformer'], "encoder_type must be one of ['conformer', 'transformer']"
@@ -303,8 +303,13 @@ class SingleP_Conformer(nn.Module):
             self.encoder = nn.TransformerEncoder(self.transformer, num_layers=enc_layers)
             conformer_class = d_ffn*2
 
-        self.fc = nn.Linear(conformer_class, 1)
-        self.sigmoid = nn.Sigmoid()
+        self.label_type = label_type
+        if label_type == 'p':
+            self.fc = nn.Linear(conformer_class, 1)
+            self.sigmoid = nn.Sigmoid()
+        elif label_type == 'other':
+            self.fc = nn.Linear(conformer_class, 2)
+            self.softmax = nn.Softmax(dim=-1)
         
         # =========================================== #
         #                   Decoder                   #
@@ -360,6 +365,7 @@ class SingleP_Conformer(nn.Module):
             self.crossAttnLayer = cross_attn_layer(n_head, conformer_class//n_head, conformer_class//n_head, conformer_class, conformer_class, d_ffn)
             self.MGANs = nn.ModuleList([MGAN(n_head, conformer_class//n_head, conformer_class//n_head, conformer_class, conformer_class, d_ffn, norm_type, l)
                                         for _ in range(dec_layers)])
+            
         elif decoder_type == 'unet':
             self.decoder = Conformer(input_dim=conformer_class, encoder_dim=d_ffn, num_attention_heads=n_head, subsample=False, num_encoder_layers=dec_layers, num_classes=d_ffn)
             self.upconv = nn.Sequential(
@@ -433,7 +439,10 @@ class SingleP_Conformer(nn.Module):
                 else:
                     dec_out = self.MGANs[i](crossattn_out, crossattn_out, crossattn_out)
 
-        out = self.sigmoid(self.fc(dec_out))
+        if self.label_type == 'p':
+            out = self.sigmoid(self.fc(dec_out))
+        elif self.label_type == 'other':
+            out = self.softmax(self.fc(dec_out))
 
         if not self.intensity_MT:
             return out
@@ -796,7 +805,7 @@ class AntiCopy_Conformer(nn.Module):
         return out
 
 class GRADUATE(nn.Module):
-    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, seg_proj_type='crossattn', decoder_type='crossattn', output_layer_type='fc', rep_KV=True):
+    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, seg_proj_type='crossattn', decoder_type='crossattn', output_layer_type='fc', rep_KV=True, label_type='p'):
         super(GRADUATE, self).__init__()
         
         dim_stft = 32
@@ -826,7 +835,7 @@ class GRADUATE(nn.Module):
                                         nn.Upsample(3000),
                                         nn.Conv1d(conformer_class, conformer_class, 5, padding='same'),
                                         nn.ReLU()) 
-        self.softmax = nn.Softmax(dim=-1)
+        self.sigmoid = nn.Sigmoid()
         
         # =========================================== #
         #               Cross-Attention               #
@@ -886,7 +895,18 @@ class GRADUATE(nn.Module):
         elif output_layer_type == 'conv':
             self.output = nn.Conv1d(conformer_class, 1, kernel_size=5, padding='same')
             
-        self.sigmoid = nn.Sigmoid()
+        if label_type == 'p':
+            if output_layer_type == 'fc':
+                self.output = nn.Linear(conformer_class, 1)
+            elif output_layer_type == 'conv':
+                self.output = nn.Conv1d(conformer_class, 1, kernel_size=5, padding='same')
+            self.output_actfn = nn.Sigmoid()
+        elif label_type == 'other':
+            if output_layer_type == 'fc':
+                self.output = nn.Linear(conformer_class, 2)
+            elif output_layer_type == 'conv':
+                self.output = nn.Conv1d(conformer_class, 2, kernel_size=5, padding='same')
+            self.output_actfn = nn.Softmax(dim=-1)
         
     def forward(self, wave, stft):
         # wave: (batch, 3000, 12)
@@ -905,10 +925,10 @@ class GRADUATE(nn.Module):
             seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
             seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
             seg_out = self.seg_projector(seg_crossattn_out)
-            seg_out = self.softmax(seg_out)
+            seg_out = self.sigmoid(seg_out)
         elif self.seg_proj_type == 'upsample':
             seg_out = self.upconv(out.permute(0,2,1)).permute(0,2,1)
-            seg_out = self.softmax(seg_out)
+            seg_out = self.sigmoid(seg_out)
         else:
             seg_out = 0.0
         
@@ -954,9 +974,9 @@ class GRADUATE(nn.Module):
             
         # output layer
         if self.output_layer_type == 'fc':
-            out = self.sigmoid(self.output(dec_out))
+            out = self.output_actfn(self.output(dec_out))
         elif self.output_layer_type == 'conv':
-            out = self.sigmoid(self.output(dec_out.permute(0,2,1)).permute(0,2,1))
+            out = self.output_actfn(self.output(dec_out.permute(0,2,1)).permute(0,2,1))
             
         return seg_out, out
 

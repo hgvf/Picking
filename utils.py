@@ -16,6 +16,7 @@ import obspy
 
 from model import *
 from RED_PAN_model import *
+from wmseg_dataparallel import BalancedDataParallel
 
 def load_dataset(opt):
     cwbsn, tsmip, stead, cwbsn_noise = 0, 0, 0, 0
@@ -26,7 +27,7 @@ def load_dataset(opt):
         print('loading STEAD')
         kwargs={'download_kwargs': {'basepath': '/mnt/nas3/earthquake_dataset_large/script/STEAD/'}}
         stead = sbd.STEAD(**kwargs)
-        stead = apply_filter(stead, opt.snr_threshold, s_wave=opt.s_wave, isStead=True)
+        stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True)
 
     if opt.dataset_opt == 'cwbsn' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan':
         # CWBSN 
@@ -34,7 +35,7 @@ def load_dataset(opt):
         kwargs={'download_kwargs': {'basepath': '/mnt/nas2/CWBSN/seisbench/'}}
 
         cwbsn = sbd.CWBSN(loading_method=opt.loading_method, **kwargs)
-        cwbsn = apply_filter(cwbsn, opt.snr_threshold, True, opt.level, opt.s_wave)
+        cwbsn = apply_filter(cwbsn, snr_threshold=opt.snr_threshold, isCWBSN=True, level=opt.level, s_wave=opt.s_wave, instrument=opt.instrument)
 
     if opt.dataset_opt == 'tsmip' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan':
         # TSMIP
@@ -44,9 +45,9 @@ def load_dataset(opt):
         tsmip = sbd.TSMIP(loading_method=opt.loading_method, sampling_rate=100, **kwargs)
 
         tsmip.metadata['trace_sampling_rate_hz'] = 100
-        tsmip = apply_filter(tsmip, opt.snr_threshold, s_wave=opt.s_wave)
+        tsmip = apply_filter(tsmip, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, instrument=opt.instrument)
 
-    if opt.dataset_opt == 'stead_noise' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan':
+    if opt.dataset_opt == 'stead_noise' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan' or opt.dataset_opt == 'tsmip':
         # STEAD noise
         print('loading STEAD noise')
         kwargs={'download_kwargs': {'basepath': '/mnt/nas3/STEAD/'}}
@@ -65,7 +66,7 @@ def load_dataset(opt):
 
     return cwbsn, tsmip, stead, cwbsn_noise
 
-def apply_filter(data, snr_threshold=-1, isCWBSN=False, level=-1, s_wave=False, isStead=False):
+def apply_filter(data, snr_threshold=-1, isCWBSN=False, level=-1, s_wave=False, isStead=False, instrument='all'):
     # Apply filter on seisbench.data class
 
     print('original traces: ', len(data))
@@ -98,7 +99,12 @@ def apply_filter(data, snr_threshold=-1, isCWBSN=False, level=-1, s_wave=False, 
     if snr_threshold != -1:
         snr_mask = data.metadata['trace_Z_snr_db'] > snr_threshold
         data.filter(snr_mask)
-        
+
+    # 篩選儀器
+    if instrument != 'all':
+        instrument_mask = data.metadata["trace_channel"] == instrument
+        data.filter(instrument_mask)
+
     print('filtered traces: ', len(data))
 
     return data
@@ -339,7 +345,7 @@ def load_model(opt, device):
         rep_KV = True if opt.rep_KV == 'True' else False
         model = SingleP_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, 
                     d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, query_type=opt.query_type,
-                    rep_KV=opt.rep_KV)
+                    rep_KV=opt.rep_KV, label_type=opt.label_type)
     elif opt.model_opt == 'conformer_stft' or opt.model_opt == 'conformer_intensity':
         # model =  SingleP_Conformer_spectrogram(dim_spectrogram=opt.dim_spectrogram, conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l)
         model = SingleP_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, 
@@ -366,9 +372,11 @@ def load_model(opt, device):
         rep_KV = True if opt.rep_KV == 'True' else False
         model = GRADUATE(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, 
                     dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, 
-                    decoder_type=opt.decoder_type, output_layer_type=opt.output_layer_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type)
+                    decoder_type=opt.decoder_type, output_layer_type=opt.output_layer_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type,
+                    label_type=opt.label_type)
     
     return model.to(device)
+    # return BalancedDataParallel(20, model.to(device))
 
 def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=None):
     if opt.model_opt == 'eqt':
@@ -394,13 +402,20 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
         loss = -h
     elif opt.model_opt == 'conformer' or opt.model_opt == 'conformer_stft' or opt.model_opt == 'conformer_embedding' or opt.model_opt == 'pretrained_embedding' \
         or opt.model_opt == 'ssl_conformer':
-        weights = torch.add(torch.mul(gt[:, 0], opt.loss_weight), 1).to(device)
         
         pred = pred.squeeze()
         if pred.ndim == 1:
             pred = pred.unsqueeze(0)
-
-        loss = F.binary_cross_entropy(weight=weights, input=pred.to(device), target=gt[:, 0].type(torch.FloatTensor).to(device))
+        
+        if opt.label_type == 'p':
+            weights = torch.add(torch.mul(gt[:, 0], opt.loss_weight), 1).to(device)
+            loss = F.binary_cross_entropy(weight=weights, input=pred.to(device), target=gt[:, 0].type(torch.FloatTensor).to(device))
+        elif opt.label_type == 'other':
+            loss = 0.0
+            for i in range(2):
+                # 0: picking label, 1: noise label
+                weights = torch.add(torch.mul(gt[:, i], opt.loss_weight), 1).to(device)
+                loss += F.binary_cross_entropy(weight=weights, input=pred[:, :, i].to(device), target=gt[:, i].type(torch.FloatTensor).to(device))
 
     elif opt.model_opt == 'conformer_intensity':
         # lambda1: picking; lambda2: multitask training
@@ -506,16 +521,22 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
         gt_seg, gt_picking = gt
         
         # picking loss
-        weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
-        picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking.squeeze().to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device))
+        if opt.label_type == 'p':
+            weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
+            picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking.squeeze().to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device))
+        elif opt.label_type == 'other':
+            picking_loss = 0.0
+            for i in range(2):
+                weights = torch.add(torch.mul(gt_picking[:, i], opt.loss_weight), 1).to(device)
+                picking_loss += F.binary_cross_entropy(weight=weights, input=pred_picking[:, :, i].to(device), target=gt_picking[:, i].type(torch.FloatTensor).to(device))
 
         if opt.seg_proj_type != 'none':
             # temporal segmentation loss
             # prediction: (batch, wavelength, 1)
             # ground-truth: (batch, wavelength)
             weights = torch.add(torch.mul(gt_seg, opt.loss_weight), 1).to(device)
-            segmentation_loss = F.binary_cross_entropy(input=pred_seg.permute(0, 2, 1), target=gt_seg.to(device).to(torch.long), weight=weights)
-            print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
+            segmentation_loss = F.binary_cross_entropy(input=pred_seg.squeeze(), target=gt_seg.type(torch.FloatTensor).to(device), weight=weights)
+            # print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
 
             loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss
         else:

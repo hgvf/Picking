@@ -42,7 +42,8 @@ def parse_args():
     parser.add_argument('--snr_threshold', type=float, default=-1)
     parser.add_argument('--level', type=int, default=-1)
     parser.add_argument('--s_wave', type=bool, default=False)
-
+    parser.add_argument('--instrument', type=str, default='all')
+    
     parser.add_argument("--device", type=str, default='cpu')
     parser.add_argument("--batch_size", type=int, default=100)
 
@@ -66,7 +67,8 @@ def parse_args():
     parser.add_argument('--query_type', type=str, default='pos_emb')
     parser.add_argument('--intensity_MT', type=bool, default=False)
     parser.add_argument('--label_smoothing', type=float, default=0.1)
-
+    parser.add_argument('--label_type', type=str, default='p')
+    
     # MGAN block
     parser.add_argument('--dim_spectrogram', type=str, default='1D')
     parser.add_argument('--MGAN_normtype', type=str, default='mean')
@@ -82,11 +84,12 @@ def parse_args():
     parser.add_argument('--n_class', type=int, default=16)
 
     # GRADUATE model
-    parser.add_argument('--cross_attn_type', type=int, default=1)
-    parser.add_argument('--n_segmentation', type=int, default=5)
+    parser.add_argument('--cross_attn_type', type=int, default=2)
+    parser.add_argument('--n_segmentation', type=int, default=2)
     parser.add_argument('--output_layer_type', type=str, default='fc')
-    parser.add_argument('--rep_KV', type=bool, default=False)
-    parser.add_argument('--segmentation_ratio', type=float, default=0.5)
+    parser.add_argument('--rep_KV', type=str, default='False')
+    parser.add_argument('--segmentation_ratio', type=float, default=0.35)
+    parser.add_argument('--seg_proj_type', type=str, default='crossattn')
 
     opt = parser.parse_args()
 
@@ -363,6 +366,8 @@ def inference(opt, model, test_loader, device):
                         out, out_MT = model(data['X'].to(device))
                     elif opt.model_opt == 'conformer_stft':
                         out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                    elif opt.model_opt == 'GRADUATE':
+                        _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
                     else:
                         out = model(data['X'].to(device))
 
@@ -371,7 +376,10 @@ def inference(opt, model, test_loader, device):
                     elif opt.model_opt == 'phaseNet':
                         out = out[:, 0].detach().squeeze().cpu().numpy()
                     else:
-                        out = out.detach().squeeze().cpu().numpy()                
+                        if opt.label_type == 'p':
+                            out = out.detach().squeeze().cpu().numpy()
+                        elif opt.label_type == 'other':
+                            out = out[:, :, 0].detach().squeeze().cpu().numpy()                
 
                     target = data['y'][:, 0].squeeze().numpy()
 
