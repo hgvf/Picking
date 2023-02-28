@@ -47,7 +47,7 @@ def load_dataset(opt):
         tsmip.metadata['trace_sampling_rate_hz'] = 100
         tsmip = apply_filter(tsmip, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, instrument=opt.instrument)
 
-    if opt.dataset_opt == 'stead_noise' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan' or opt.dataset_opt == 'tsmip':
+    if opt.dataset_opt == 'stead_noise' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan' or opt.dataset_opt == 'tsmip' or opt.dataset_opt == 'cwbsn':
         # STEAD noise
         print('loading STEAD noise')
         kwargs={'download_kwargs': {'basepath': '/mnt/nas3/STEAD/'}}

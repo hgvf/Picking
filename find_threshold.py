@@ -236,11 +236,17 @@ def set_generators(opt):
         dev = cwbsn_dev + tsmip_dev + stead_dev + cwbsn_noise_dev
         test = cwbsn_test + tsmip_test + stead_test + cwbsn_noise_test
     elif opt.dataset_opt == 'cwbsn':
-        dev = cwbsn.dev(), 
-        test = cwbsn.test()
+        cwbsn_dev, cwbsn_test = cwbsn.dev(), cwbsn.test()
+        stead_dev, stead_test = stead.dev(), stead.test()
+
+        dev = cwbsn_dev + stead_dev
+        test = cwbsn_test + stead_test
     elif opt.dataset_opt == 'tsmip':
-        dev = tsmip.dev(), 
-        test = tsmip.test()
+        tsmip_dev, tsmip_test = tsmip.dev(), tsmip.test()
+        stead_dev, stead_test = stead.dev(), stead.test()
+
+        dev = tsmip_dev + stead_dev
+        test = tsmip_test + stead_test
     elif opt.dataset_opt == 'stead':
         _, dev, test = stead.train_dev_test()
     elif opt.dataset_opt == 'redpan' or opt.dataset_opt == 'taiwan':

@@ -180,9 +180,17 @@ def split_dataset(opt, return_dataset=False):
         train = cwbsn_train + tsmip_train + cwbsn_noise_train
         dev = cwbsn_dev + tsmip_dev + cwbsn_noise_dev
     elif opt.dataset_opt == 'cwbsn':
-        train, dev, _ = cwbsn.train_dev_test()
+        cwbsn_train, cwbsn_dev, _ = cwbsn.train_dev_test()
+        stead_train, stead_dev, _ = stead.train_dev_test()
+
+        train = cwbsn_train + stead_train
+        dev = cwbsn_dev + stead_dev
     elif opt.dataset_opt == 'tsmip':
-        train, dev, _ = tsmip.train_dev_test()
+        tsmip_train, tsmip_dev, _ = tsmip.train_dev_test()
+        stead_train, stead_dev, _ = stead.train_dev_test()
+
+        train = tsmip_train + stead_train
+        dev = tsmip_dev + stead_dev
     elif opt.dataset_opt == 'stead':
         train, dev, _ = stead.train_dev_test()
     elif opt.dataset_opt == 'prev_taiwan':
