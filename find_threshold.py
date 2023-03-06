@@ -35,6 +35,7 @@ def parse_args():
     parser.add_argument('--sample_tolerant', type=int, default=50)
     parser.add_argument('--do_test', type=bool, default=False)
     parser.add_argument('--p_timestep', type=int, default=750)
+    parser.add_argument('--allTest', type=bool, default=False)
 
     # dataset hyperparameters
     parser.add_argument('--workers', type=int, default=1)
@@ -223,7 +224,7 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
 
     return tp, fp, tn, fn, diff, abs_diff, res, snr_stat, intensity_stat, case_stat
 
-def set_generators(opt):
+def set_generators(opt, ptime=None):
     cwbsn, tsmip, stead, cwbsn_noise = load_dataset(opt)
 
     # split datasets
@@ -271,8 +272,10 @@ def set_generators(opt):
 
     # set generator with or without augmentations
     phase_dict = ['trace_p_arrival_sample']
-    augmentations = basic_augmentations(opt, phase_dict, True)
-
+    if not opt.allTest:
+        ptime = opt.p_timestep  
+    augmentations = basic_augmentations(opt, phase_dict, ptime=ptime, test=True)
+    
     dev_generator.add_augmentations(augmentations)
     test_generator.add_augmentations(augmentations)
 
@@ -441,7 +444,10 @@ if __name__ == '__main__':
     else:
         level = str(opt.level)
 
-    output_dir = os.path.join(output_dir, level)
+    if not opt.allTest:
+        output_dir = os.path.join(output_dir, level)
+    else:
+        output_dir = os.path.join(output_dir, 'allTest')
     
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
@@ -451,6 +457,8 @@ if __name__ == '__main__':
         subpath = subpath + '_' + str(opt.level)
     if opt.p_timestep != 750:
         subpath = subpath + '_' + str(opt.p_timestep)
+    if opt.allTest:
+        subpath = subpath + 'allCase_testing_' + str(opt.level)
     subpath = subpath + '.log'
     print('logpath: ', subpath)
     log_path = os.path.join(output_dir, subpath)
@@ -466,10 +474,11 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # load datasets
-    print('loading datasets')
-    dev_generator, test_generator = set_generators(opt)
-    dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
-    test_loader = DataLoader(test_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
+    if not opt.allTest:
+        print('loading datasets')
+        dev_generator, test_generator = set_generators(opt)
+        dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
+        test_loader = DataLoader(test_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
 
     # load model
     model = load_model(opt, device)
@@ -502,7 +511,7 @@ if __name__ == '__main__':
     elif opt.threshold_type == 'single':
         mode = ['single']
 
-    if not opt.do_test:
+    if not opt.do_test and not opt.allTest:
         # find the best criteria
         print('finding best criteria...')
         pred, gt, snr_total, intensity_total = inference(opt, model, dev_loader, device)
@@ -568,23 +577,67 @@ if __name__ == '__main__':
         best_trigger = opt.threshold_trigger_start
 
     # start predicting on test set
-    logging.info('Inference on testing set')
-    pred, gt, snr_total, intensity_total = inference(opt, model, test_loader, device)
-    fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
-    print('fscore: %.4f' %(fscore))
+    if not opt.allTest:
+        logging.info('Inference on testing set')
+        pred, gt, snr_total, intensity_total = inference(opt, model, test_loader, device)
+        fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
+        print('fscore: %.4f' %(fscore))
 
-    with open(os.path.join(output_dir, 'test_abs_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
-        pickle.dump(abs_diff, f)
+        with open(os.path.join(output_dir, 'test_abs_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
+            pickle.dump(abs_diff, f)
 
-    with open(os.path.join(output_dir, 'test_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
-        pickle.dump(diff, f)
+        with open(os.path.join(output_dir, 'test_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
+            pickle.dump(diff, f)
 
-    with open(os.path.join(output_dir, 'test_snr_stat_'+str(opt.level)+'.json'), 'w') as f:
-        json.dump(snr_stat, f)
+        with open(os.path.join(output_dir, 'test_snr_stat_'+str(opt.level)+'.json'), 'w') as f:
+            json.dump(snr_stat, f)
 
-    with open(os.path.join(output_dir, 'test_intensity_stat_'+str(opt.level)+'.json'), 'w') as f:
-        json.dump(intensity_stat, f)
+        with open(os.path.join(output_dir, 'test_intensity_stat_'+str(opt.level)+'.json'), 'w') as f:
+            json.dump(intensity_stat, f)
 
-    with open(os.path.join(output_dir, 'test_case_stat_'+str(opt.level)+'.json'), 'w') as f:
-        json.dump(case_stat, f)
+        with open(os.path.join(output_dir, 'test_case_stat_'+str(opt.level)+'.json'), 'w') as f:
+            json.dump(case_stat, f)
 
+    # 將 p arrival 固定在多個不同時間點，分別得到實驗結果
+    if opt.allTest:
+        logging.info('configs: ')
+        logging.info(opt)
+        
+        print('Start testing...')
+        ptime_list = [750, 1500, 2000, 2500, 2750]
+        best_mode = opt.threshold_type
+        best_prob = opt.threshold_prob_start
+        best_trigger = opt.threshold_trigger_start
+
+        for ptime in ptime_list:
+            print('='*50)
+            print(f"ptime: {ptime}")
+            new_output_dir = os.path.join(output_dir, str(ptime))
+            if not os.path.exists(new_output_dir):
+                os.makedirs(new_output_dir)
+
+            _, test_generator = set_generators(opt, ptime=ptime)
+            test_loader = DataLoader(test_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
+
+            # start predicting on test set
+            logging.info('======================================================')
+            logging.info('Inference on testing set, ptime: %d' %(ptime))
+            pred, gt, snr_total, intensity_total = inference(opt, model, test_loader, device)
+            fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
+            print(f"ptime: {ptime}, fscore: {fscore}")
+            logging.info('======================================================')
+
+            with open(os.path.join(new_output_dir, 'test_abs_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
+                pickle.dump(abs_diff, f)
+
+            with open(os.path.join(new_output_dir, 'test_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
+                pickle.dump(diff, f)
+
+            with open(os.path.join(new_output_dir, 'test_snr_stat_'+str(opt.level)+'.json'), 'w') as f:
+                json.dump(snr_stat, f)
+
+            with open(os.path.join(new_output_dir, 'test_intensity_stat_'+str(opt.level)+'.json'), 'w') as f:
+                json.dump(intensity_stat, f)
+
+            with open(os.path.join(new_output_dir, 'test_case_stat_'+str(opt.level)+'.json'), 'w') as f:
+                json.dump(case_stat, f)

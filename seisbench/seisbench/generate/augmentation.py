@@ -592,7 +592,7 @@ class ShiftToEnd:
     """
 
     def __init__(
-        self, left=800, right=50, label_columns="trace_p_arrival_sample", key="X", n_segmentation=4, step=1
+        self, left=500, right=50, label_columns="trace_p_arrival_sample", key="X", n_segmentation=4, step=1
     ):
         if isinstance(key, str):
             self.key = (key, key)
@@ -612,7 +612,7 @@ class ShiftToEnd:
         tri = metadata[self.label_columns]
                 
         try:
-            if tri == 0 or np.isnan(tri):
+            if tri == 0 or np.isnan(tri) or tri >= waveforms.shape[1] or tri < 0:
                 tri = 0
                 mean = np.mean(waveforms[:3, :], axis=1)
             else:
@@ -624,89 +624,93 @@ class ShiftToEnd:
                 )
                 mean[np.isnan(mean)] = 0
 
-            new_tri = np.random.randint(
-                waveforms.shape[1] - self.left, waveforms.shape[1] - self.right
-            )
-            remaining_wave = waveforms.shape[1] - new_tri
-
-            # shift the waveforms
-            waveforms[0] = np.hstack(
-                (
-                    mean[0].repeat(waveforms.shape[1] - remaining_wave),
-                    waveforms[0, tri : tri + remaining_wave],
+            # if noise, then don't shift the trace
+            if tri != 0:
+                new_tri = np.random.randint(
+                    max(waveforms.shape[1] - self.left, tri), waveforms.shape[1] - self.right
                 )
-            )
-            waveforms[1] = np.hstack(
-                (
-                    mean[1].repeat(waveforms.shape[1] - remaining_wave),
-                    waveforms[1, tri : tri + remaining_wave],
-                )
-            )
-            waveforms[2] = np.hstack(
-                (
-                    mean[2].repeat(waveforms.shape[1] - remaining_wave),
-                    waveforms[2, tri : tri + remaining_wave],
-                )
-            )
-            # shift the other features: characteristic, sta, lta
-            if waveforms.shape[0] > 3:
-                for i in range(3, waveforms.shape[0]):
-                    waveforms[i] = np.hstack(
-                        (
-                            np.zeros(waveforms.shape[1] - remaining_wave),
-                            waveforms[i, tri : tri + remaining_wave],
-                        )
+                remaining_wave = waveforms.shape[1] - new_tri
+                # print(f"original tri: {tri}, new_tri: {new_tri}")
+                # print("wavelength: ", waveforms.shape[1])
+                # shift the waveforms
+                waveforms[0] = np.hstack(
+                    (
+                        mean[0].repeat(waveforms.shape[1] - remaining_wave),
+                        waveforms[0, tri : tri + remaining_wave],
                     )
-            # shift the label
-            gt[0][0] = np.hstack(
-                (
-                    np.zeros(gt[0].shape[1] - remaining_wave),
-                    gt[0][0, tri : tri + remaining_wave],
                 )
-            )
-            gt[0][1] = np.hstack(
-                (
-                    np.ones(gt[0].shape[1] - remaining_wave),
-                    gt[0][1, tri : tri + remaining_wave],
+                
+                waveforms[1] = np.hstack(
+                    (
+                        mean[1].repeat(waveforms.shape[1] - remaining_wave),
+                        waveforms[1, tri : tri + remaining_wave],
+                    )
                 )
-            )
+                waveforms[2] = np.hstack(
+                    (
+                        mean[2].repeat(waveforms.shape[1] - remaining_wave),
+                        waveforms[2, tri : tri + remaining_wave],
+                    )
+                )
+                # shift the other features: characteristic, sta, lta
+                if waveforms.shape[0] > 3:
+                    for i in range(3, waveforms.shape[0]):
+                        waveforms[i] = np.hstack(
+                            (
+                                np.zeros(waveforms.shape[1] - remaining_wave),
+                                waveforms[i, tri : tri + remaining_wave],
+                            )
+                        )
+                # shift the label
+                gt[0][0] = np.hstack(
+                    (
+                        np.zeros(gt[0].shape[1] - remaining_wave),
+                        gt[0][0, tri : tri + remaining_wave],
+                    )
+                )
+                gt[0][1] = np.hstack(
+                    (
+                        np.ones(gt[0].shape[1] - remaining_wave),
+                        gt[0][1, tri : tri + remaining_wave],
+                    )
+                )
 
-            # shift the temporal segmentation label
-            if 'seg' in state_dict.keys():
-                # using 12-dim vector for temporal segmentation
-                out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
+                # shift the temporal segmentation label
+                if 'seg' in state_dict.keys():
+                    # using 12-dim vector for temporal segmentation
+                    out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
 
-                if out[-1] != (self.n_segmentation-1):
-                    out = TopDown(waveforms.copy(), out[-1], self.step)
+                    if out[-1] != (self.n_segmentation-1):
+                        out = TopDown(waveforms.copy(), out[-1], self.step)
 
-                seg_edge = sorted(out[0])
-            
-                # labeled the ground-truth vector
-                seg_gt = np.zeros(waveforms.shape[-1])
-                for edge in seg_edge:
-                    if edge == waveforms.shape[-1] - 1:
-                        continue
+                    seg_edge = sorted(out[0])
                 
-                    seg_gt += gen_tar_func(waveforms.shape[-1], edge, 10)
-                
-                # the values in gt vector always <= 1
-                seg_gt[seg_gt > 1] = 1
+                    # labeled the ground-truth vector
+                    seg_gt = np.zeros(waveforms.shape[-1])
+                    for edge in seg_edge:
+                        if edge == waveforms.shape[-1] - 1:
+                            continue
+                    
+                        seg_gt += gen_tar_func(waveforms.shape[-1], edge, 10)
+                    
+                    # the values in gt vector always <= 1
+                    seg_gt[seg_gt > 1] = 1
 
-                # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
-                seg_gt = np.expand_dims(seg_gt, axis=0)
+                    # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
+                    seg_gt = np.expand_dims(seg_gt, axis=0)
 
-                state_dict['seg'] = seg_gt
-                
-            # shift the stft 
-            if 'stft' in state_dict.keys():
-                acc = np.sqrt(waveforms[0]**2+waveforms[1]**2+waveforms[2]**2)
-                f, t, Zxx = scipy.signal.stft(acc, nperseg=20, nfft=64)
-                real = np.abs(Zxx.real).T
+                    state_dict['seg'] = seg_gt
+                    
+                # shift the stft 
+                if 'stft' in state_dict.keys():
+                    acc = np.sqrt(waveforms[0]**2+waveforms[1]**2+waveforms[2]**2)
+                    f, t, Zxx = scipy.signal.stft(acc, nperseg=20, nfft=64)
+                    real = np.abs(Zxx.real).T
 
-                # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
-                # 移除一個 frequency component，將頻率維度湊到偶數個
-                real = np.expand_dims(real[:, :-1], axis=0)
-                state_dict['stft'] = real
+                    # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
+                    # 移除一個 frequency component，將頻率維度湊到偶數個
+                    real = np.expand_dims(real[:, :-1], axis=0)
+                    state_dict['stft'] = real
 
         except Exception as e:
             # print(e)
@@ -836,9 +840,8 @@ class CharStaLta:
         waveforms = np.concatenate(
             (waveforms, wave_characteristic, wave_sta, wave_lta), axis=0
         )
-
+        
         state_dict[self.key[1]] = (waveforms, metadata)
-
 
 class STFT:
     def __init__(self, axis=-1, key="X", imag=False, dim_spectrogram='1D'):
@@ -863,7 +866,6 @@ class STFT:
 
         state_dict[self.key[1]] = (waveforms, metadata)
         state_dict['stft'] = real
-
 
 class SNR:
     def __init__(self, axis=-1, key="X", noise_sec=5, signal_sec=10, wave_len=3000):
@@ -1002,4 +1004,3 @@ class TemporalSegmentation:
         
         state_dict[self.key[1]] = (waveforms, metadata)
         state_dict['seg'] = gt
-

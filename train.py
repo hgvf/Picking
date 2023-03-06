@@ -9,6 +9,7 @@ from tqdm import tqdm
 import sys
 sys.path.append('../RED-PAN')
 from gen_tar import *
+from REDPAN_augmentation import *
 
 import torch
 import torch.nn as nn
@@ -208,7 +209,7 @@ def split_dataset(opt, return_dataset=False):
     else:
         return train, dev, cwbsn, tsmip, stead
 
-def set_generators(opt, data):
+def set_generators(opt, data, Taiwan_aug=False):
     generator = sbg.GenericGenerator(data)
 
     # set generator with or without augmentations
@@ -217,7 +218,7 @@ def set_generators(opt, data):
 
     generator.add_augmentations(augmentations)
 
-    if opt.aug and not opt.model_opt == 'RED_PAN':
+    if opt.aug and not opt.model_opt == 'RED_PAN' and not Taiwan_aug:
         # data augmentation during training
         # 1) Add gaps (0.2)
         # 2) Channel dropout (0.3)
@@ -324,7 +325,7 @@ def level_stage(prev_loss, cur_loss, prev_stage, schedule_cnt, patience):
     else:
         return prev_stage, schedule_cnt, False
 
-def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, output_dir, redpan_loss=None):
+def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, output_dir, redpan_loss=None, Taiwan_aug=False):
     model.train()
     train_loss = 0.0
     min_loss = 1000
@@ -345,6 +346,15 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
             task1_loss += PS_loss.cpu().item()
             task2_loss += M_loss.cpu().item()
         else:
+            if opt.aug and Taiwan_aug:
+                data['X'], data['y'] = REDPAN_augmentation(data['X'], data['y'])
+
+            # plt.subplot(211)
+            # plt.plot(data['X'][0, :3].T)
+            # plt.subplot(212)
+            # plt.plot(data['y'][0].T)
+            # plt.savefig(f"./tmp/{idx}.png")
+            # plt.clf()
             if opt.model_opt == 'conformer_stft':
                 out = model(data['X'].to(device), stft=data['stft'].to(device).float())
             elif opt.model_opt == 'conformer_intensity':
@@ -384,7 +394,7 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
     else:
         return train_loss
 
-def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None):
+def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_aug=False):
     model.eval()
     dev_loss = 0.0
     task1_loss, task2_loss = 0.0, 0.0
@@ -405,6 +415,9 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None):
                 task1_loss += PS_loss.cpu().item()
                 task2_loss += M_loss.cpu().item()
             else:
+                if opt.aug and Taiwan_aug:
+                    data['X'], data['y'] = REDPAN_augmentation(data['X'], data['y'])
+
                 if opt.model_opt == 'conformer_stft':
                     out = model(data['X'].to(device), stft=data['stft'].to(device).float())
                 elif opt.model_opt == 'conformer_intensity':
@@ -517,7 +530,21 @@ if __name__ == '__main__':
     stage, early_stop_cnt, schedule_cnt = opt.init_stage, 0, 0
     prev_loss, valid_loss = 1000, 1000
     isNext = False
+    isTaiwanAug = False
     for epoch in range(init_epoch, opt.epochs):
+
+        # Taiwan augmentation
+        if early_stop_cnt >= 4 and not isTaiwanAug: 
+            isTaiwanAug = True
+            train_set, dev_set = split_dataset(opt, return_dataset=False)
+    
+            train_generator = set_generators(opt, train_set, Taiwan_aug=True)
+            dev_generator = set_generators(opt, dev_set, Taiwan_aug=True)
+
+            # create dataloaders
+            print('creating Taiwan augmentation dataloaders')
+            train_loader = DataLoader(train_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+            dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
 
         # SNR schedule learning
         if opt.snr_schedule or opt.level_schedule:
@@ -543,8 +570,8 @@ if __name__ == '__main__':
             train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, redpan_loss=(PS_loss, M_loss))
             valid_loss = valid(model, dev_loader, device, epoch, opt, redpan_loss=(PS_loss, M_loss))
         else:
-            train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir)
-            valid_loss = valid(model, dev_loader, device, epoch, opt)
+            train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, isTaiwanAug)
+            valid_loss = valid(model, dev_loader, device, epoch, opt, isTaiwanAug)
 
         if opt.model_opt == 'RED_PAN':
             train_loss, task1_loss, task2_loss = train_loss

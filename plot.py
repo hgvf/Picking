@@ -52,7 +52,7 @@ def parse_args():
     # seisbench options
     parser.add_argument('--model_opt', type=str, default='none')
     parser.add_argument('--loss_weight', type=float, default=50)
-    parser.add_argument('--dataset_opt', type=str, default='all')
+    parser.add_argument('--dataset_opt', type=str, default='taiwan')
     parser.add_argument('--loading_method', type=str, default='full')
     parser.add_argument('--normalize_opt', type=str, default='peak')
 
@@ -372,7 +372,7 @@ def set_generators(opt):
 
     # set generator with or without augmentations
     phase_dict = ['trace_p_arrival_sample']
-    augmentations = basic_augmentations(opt, phase_dict, True)
+    augmentations = basic_augmentations(opt, phase_dict, ptime=opt.p_timestep, test=True)
 
     test_generator.add_augmentations(augmentations)
 
