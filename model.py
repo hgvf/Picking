@@ -459,7 +459,6 @@ class SingleP_Conformer(nn.Module):
         # for param in self.crossAttnLayer.parameters():
         #     param.requires_grad = False
 
-
 class SingleP_Conformer_spectrogram(nn.Module):
     def __init__(self, conformer_class, d_model, d_ffn, n_head, enc_layers, dec_layers, upsample=False, learnable_query=False, subsample=False, dim_spectrogram='1D'):
         super(SingleP_Conformer_spectrogram, self).__init__()
@@ -876,7 +875,9 @@ class GRADUATE(nn.Module):
 
         # =========================================== #
         #                   Decoder                   #
-        # =========================================== #        
+        # =========================================== #    
+        self.decoder_type = decoder_type
+        
         if decoder_type == 'crossattn':
             self.decoder = nn.ModuleList([cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
                                                 for _ in range(dec_layers)]
@@ -884,6 +885,48 @@ class GRADUATE(nn.Module):
         elif decoder_type == 'MGAN':
             self.decoder = nn.ModuleList([MGAN(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn, norm_type, l)
                                         for _ in range(dec_layers)])
+        
+        elif decoder_type == 'unet':
+            self.down_decoder = nn.Sequential(nn.Conv1d(conformer_class, conformer_class*2, kernel_size=3, stride=2),
+                                       nn.BatchNorm1d(conformer_class*2),
+                                       nn.ReLU(),
+                                       nn.Dropout(0.1),
+                                       nn.Conv1d(conformer_class*2, conformer_class*3, kernel_size=5, stride=3),
+                                       nn.BatchNorm1d(conformer_class*3),
+                                       nn.ReLU(),
+                                       nn.Dropout(0.1),
+                                       nn.Conv1d(conformer_class*3, conformer_class*4, kernel_size=7, stride=3),
+                                       nn.BatchNorm1d(conformer_class*4),
+                                       nn.ReLU(),
+                                        nn.Dropout(0.1),
+                                       nn.Conv1d(conformer_class*4, conformer_class*5, kernel_size=9, stride=3),
+                                       nn.BatchNorm1d(conformer_class*5),
+                                       nn.ReLU(),
+                                       nn.Dropout(0.1),
+                                       )
+            self.decoder_layer = nn.TransformerEncoderLayer(d_model=conformer_class*5, nhead=nhead, dim_feedforward=d_ffn)
+            self.decoder = nn.TransformerEncoder(self.decoder_layer, num_layers=dec_layers)
+            
+            self.up_decoder = nn.Sequential(nn.Upsample(165),
+                                      nn.Conv1d(conformer_class*5, conformer_class*4, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(conformer_class*4),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),
+                                      nn.Upsample(499),
+                                      nn.Conv1d(conformer_class*4, conformer_class*3, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(conformer_class*3),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),
+                                      nn.Upsample(1499),
+                                      nn.Conv1d(conformer_class*3, conformer_class*2, kernel_size=5, padding='same'),
+                                      nn.BatchNorm1d(conformer_class*2),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),
+                                      nn.Upsample(3000),
+                                      nn.Conv1d(conformer_class*2, conformer_class*1, kernel_size=7, padding='same'),
+                                      nn.BatchNorm1d(conformer_class),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),)
             
         # =========================================== #
         #                    Output                   #
@@ -912,14 +955,11 @@ class GRADUATE(nn.Module):
         # wave: (batch, 3000, 12)
         wave = wave.permute(0,2,1)
 
-        # check whether there is nan in wave, padding with zero 
-        # isNaN = torch.isnan(wave)
-        # if torch.any(isNaN):
-        #     wave[isNaN] = 0
-        #     print('nan!')
-        # encoded representation: (batch, 749, conformer_class)
         out, _ = self.conformer(wave, 3000)
         
+        plt.figure(figsize=(12, 20))
+        plt.matshow(out[0].T.detach().numpy(), aspect='auto')
+        plt.show()
         # temporal segmentation
         if self.seg_proj_type == 'crossattn':
             seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
@@ -955,19 +995,23 @@ class GRADUATE(nn.Module):
 
             crossattn_out = self.crossattn(rep_posEmb, out, out)
             stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
-
+        
         # decoder
-        for i, layer in enumerate(self.decoder):
-            if i == 0:
-                if self.rep_KV:
-                    dec_out = layer(crossattn_out, out, out)
+        if self.decoder_type == 'unet':
+            dec_tmp = self.down_decoder(crossattn_out.permute(0,2,1)).permute(0,2,1)
+            dec_out = self.up_decoder(self.decoder(dec_tmp).permute(0,2,1)).permute(0,2,1)
+        else:
+            for i, layer in enumerate(self.decoder):
+                if i == 0:
+                    if self.rep_KV:
+                        dec_out = layer(crossattn_out, out, out)
+                    else:
+                        dec_out = layer(crossattn_out, crossattn_out, crossattn_out)
                 else:
-                    dec_out = layer(crossattn_out, crossattn_out, crossattn_out)
-            else:
-                if self.rep_KV:
-                    dec_out = layer(dec_out, out, out)
-                else:
-                    dec_out = layer(dec_out, dec_out, dec_out)
+                    if self.rep_KV:
+                        dec_out = layer(dec_out, out, out)
+                    else:
+                        dec_out = layer(dec_out, dec_out, dec_out)
         
         if self.cross_attn_type == 3:
             dec_out = self.stft_rep(stft_out, dec_out, dec_out)
@@ -979,6 +1023,5 @@ class GRADUATE(nn.Module):
             out = self.output_actfn(self.output(dec_out.permute(0,2,1)).permute(0,2,1))
             
         return seg_out, out
-
 
         

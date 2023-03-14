@@ -77,10 +77,11 @@ def parse_args():
     parser.add_argument('--emb_dim', type=int, default=64)
     parser.add_argument('--n_class', type=int, default=128)
     parser.add_argument('--label_type', type=str, default='p')
+    parser.add_argument('--query_type', type=str, default='pos_emb')
 
     # GRADUATE model
     parser.add_argument('--cross_attn_type', type=int, default=2)
-    parser.add_argument('--n_segmentation', type=int, default=2)
+    parser.add_argument('--n_segmentation', type=int, default=5)
     parser.add_argument('--output_layer_type', type=str, default='fc')
     parser.add_argument('--rep_KV', type=str, default='False')
     parser.add_argument('--segmentation_ratio', type=float, default=0.35)
@@ -476,7 +477,21 @@ if __name__ == '__main__':
                     out = out_PS[0, 0].detach().squeeze().cpu().numpy()                    
                 else:
                     if opt.model_opt == 'GRADUATE':
-                        _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        out_seg, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+
+                        plt.figure(figsize=(9, 15))
+                        plt.subplot(311)
+                        plt.plot(data['X'][0, :3].T)
+                        plt.title('ZNE')
+                        plt.subplot(312)
+                        plt.ylim([-0.05, 1.05])
+                        plt.plot(out_seg[0].detach().cpu().numpy())
+                        plt.title('segmentation prediction')
+                        plt.subplot(313)
+                        plt.plot(data['seg'][0].numpy())
+                        plt.title('segmentation ground-truth')
+                        plt.savefig(f"{idx}.png")
+                        plt.clf()
                     else:
                         out = model(data['X'])
                     
@@ -491,7 +506,7 @@ if __name__ == '__main__':
                             out = out[:, :, 0].detach().squeeze().cpu().numpy()   
                     
                     gt = data['y'][0, 0]
-
+                    
             a, b, c, d, e, f, pred_trigger, gt_trigger = evaluation(out, gt, opt.threshold_prob, opt.threshold_trigger, opt.sample_tolerant, opt.threshold_type)
             
             if a == 1:

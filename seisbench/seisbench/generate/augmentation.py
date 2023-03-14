@@ -987,7 +987,7 @@ class TemporalSegmentation:
             out = TopDown(waveforms.copy(), out[-1], self.step)
 
         seg_edge = sorted(out[0])
-       
+        
         # labeled the ground-truth vector
         gt = np.zeros(waveforms.shape[-1])
         for edge in seg_edge:

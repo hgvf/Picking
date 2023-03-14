@@ -244,10 +244,12 @@ def set_generators(opt, ptime=None):
         test = cwbsn_test + stead_test
     elif opt.dataset_opt == 'tsmip':
         tsmip_dev, tsmip_test = tsmip.dev(), tsmip.test()
-        stead_dev, stead_test = stead.dev(), stead.test()
+        # stead_dev, stead_test = stead.dev(), stead.test()
 
-        dev = tsmip_dev + stead_dev
-        test = tsmip_test + stead_test
+        dev = tsmip_dev
+        test = tsmip_test
+        # dev = tsmip_dev + stead_dev
+        # test = tsmip_test + stead_test
     elif opt.dataset_opt == 'stead':
         _, dev, test = stead.train_dev_test()
     elif opt.dataset_opt == 'redpan' or opt.dataset_opt == 'taiwan':
@@ -447,7 +449,7 @@ if __name__ == '__main__':
     if not opt.allTest:
         output_dir = os.path.join(output_dir, level)
     else:
-        output_dir = os.path.join(output_dir, 'allTest')
+        output_dir = os.path.join(output_dir, f"allTest_{opt.dataset_opt}")
     
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
@@ -602,6 +604,7 @@ if __name__ == '__main__':
     if opt.allTest:
         logging.info('configs: ')
         logging.info(opt)
+        logging.info('dataset: ', opt.dataset_opt)
         
         print('Start testing...')
         ptime_list = [750, 1500, 2000, 2500, 2750]

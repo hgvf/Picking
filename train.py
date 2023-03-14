@@ -3,12 +3,14 @@ import os
 import numpy as np
 import logging
 import requests
+import pickle
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import sys
 sys.path.append('../RED-PAN')
 from gen_tar import *
+from REDPAN_dataset import *
 from REDPAN_augmentation import *
 
 import torch
@@ -59,7 +61,10 @@ def parse_args():
     parser.add_argument('--init_stage', type=int, default=0)
     parser.add_argument('--s_wave', type=bool, default=False)
     parser.add_argument('--instrument', type=str, default='all')
-
+    parser.add_argument('--EEW', type=bool, default='False')
+    parser.add_argument('--samp_ratio', type=float, default=1.0)
+    parser.add_argument('--special_aug', type=bool, default=False)
+    
     # data augmentations
     parser.add_argument('--gaussian_noise_prob', type=float, default=0.5)
     parser.add_argument('--channel_dropout_prob', type=float, default=0.3)
@@ -214,7 +219,7 @@ def set_generators(opt, data, Taiwan_aug=False):
 
     # set generator with or without augmentations
     phase_dict = ['trace_p_arrival_sample']
-    augmentations = basic_augmentations(opt, phase_dict)
+    augmentations = basic_augmentations(opt, phase_dict=phase_dict, EEW=opt.EEW)
 
     generator.add_augmentations(augmentations)
 
@@ -333,44 +338,75 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
     
     train_loop = tqdm(enumerate(dataloader), total=len(dataloader))
     for idx, (data) in train_loop:
-        if opt.model_opt == 'basicphaseAE':
-            data['X'] = data['X'].reshape(-1, 3, 600)
+        # for original REDPAN dataset
+        if opt.dataset_opt == 'REDPAN_dataset':
+            if opt.model_opt == 'RED_PAN':
+                wf, psn, mask = data
+                out = model(wf.to(device))
+                loss, PS_loss, M_loss = loss_fn(opt, out, (psn, mask), device, redpan_loss, cur_epoch)
+                task1_loss += PS_loss.cpu().item()
+                task2_loss += M_loss.cpu().item()
+            elif opt.model_opt == 'conformer':
+                wf, psn, mask = data
+                out = model(wf.to(device))
 
-        if opt.model_opt == 'RED_PAN':
-            if opt.aug:
-                out = model(REDPAN_aug(data['X'])[:, :3].to(device))
-            else:
-                out = model(data['X'][:, :3].to(device))
-            
-            loss, PS_loss, M_loss = loss_fn(opt, out, (data['X'][:, 3:6], data['X'][:, 6:]), device, redpan_loss, cur_epoch)
-            task1_loss += PS_loss.cpu().item()
-            task2_loss += M_loss.cpu().item()
+                if opt.label_type == 'other':
+                    idx = np.array([0, 2])
+                    loss = loss_fn(opt, out, psn[:, idx], device)
+                elif opt.label_type == 'p':
+                    loss = loss_fn(opt, out, psn[:, 0], device)
+            elif opt.model_opt == 'GRADUATE':
+                wf, psn, mask, stft, seg = data
+                out_seg, out = model(wf.to(device), stft=stft.float().to(device))
+
+                if opt.label_type == 'other':
+                    idx = np.array([0, 2])
+                    loss = loss_fn(opt, out, psn[:, idx], device)
+                elif opt.label_type == 'p':
+                    loss = loss_fn(opt, pred=(out_seg, out), gt=(seg, psn[:, 0]), device=device)
         else:
-            if opt.aug and Taiwan_aug:
-                data['X'], data['y'] = REDPAN_augmentation(data['X'], data['y'])
+            # 不用跑完全部資料，太耗時
+            if idx >= len(dataloader)*opt.samp_ratio:
+                break
 
-            # plt.subplot(211)
-            # plt.plot(data['X'][0, :3].T)
-            # plt.subplot(212)
-            # plt.plot(data['y'][0].T)
-            # plt.savefig(f"./tmp/{idx}.png")
-            # plt.clf()
-            if opt.model_opt == 'conformer_stft':
-                out = model(data['X'].to(device), stft=data['stft'].to(device).float())
-            elif opt.model_opt == 'conformer_intensity':
-                out, out_MT = model(data['X'].to(device))
-            elif opt.model_opt == 'GRADUATE':
-                out_seg, out = model(data['X'].to(device), stft=data['stft'].float().to(device))
+            if opt.model_opt == 'basicphaseAE':
+                data['X'] = data['X'].reshape(-1, 3, 600)
 
+            if opt.model_opt == 'RED_PAN':
+                if opt.aug:
+                    out = model(REDPAN_aug(data['X'])[:, :3].to(device))
+                else:
+                    out = model(data['X'][:, :3].to(device))
+                
+                loss, PS_loss, M_loss = loss_fn(opt, out, (data['X'][:, 3:6], data['X'][:, 6:]), device, redpan_loss, cur_epoch)
+                task1_loss += PS_loss.cpu().item()
+                task2_loss += M_loss.cpu().item()
             else:
-                out = model(data['X'].to(device))
-            
-            if opt.model_opt == 'conformer_intensity':
-                loss = loss_fn(opt, out, data['y'], device, intensity=(out_MT, data['intensity']))
-            elif opt.model_opt == 'GRADUATE':
-                loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
-            else:
-                loss = loss_fn(opt, out, data['y'], device)
+                if opt.special_aug and Taiwan_aug:
+                    data['X'], data['y'] = REDPAN_augmentation(data['X'], data['y'])
+
+                # plt.subplot(211)
+                # plt.plot(data['X'][0, :3].T)
+                # plt.subplot(212)
+                # plt.plot(data['y'][0].T)
+                # plt.savefig(f"./tmp/{idx}.png")
+                # plt.clf()
+                if opt.model_opt == 'conformer_stft':
+                    out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                elif opt.model_opt == 'conformer_intensity':
+                    out, out_MT = model(data['X'].to(device))
+                elif opt.model_opt == 'GRADUATE':
+                    out_seg, out = model(data['X'].to(device), stft=data['stft'].float().to(device))
+
+                else:
+                    out = model(data['X'].to(device))
+                
+                if opt.model_opt == 'conformer_intensity':
+                    loss = loss_fn(opt, out, data['y'], device, intensity=(out_MT, data['intensity']))
+                elif opt.model_opt == 'GRADUATE':
+                    loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
+                else:
+                    loss = loss_fn(opt, out, data['y'], device)
     
         loss = loss / opt.gradient_accumulation
         loss.backward()
@@ -402,37 +438,64 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
     valid_loop = tqdm(enumerate(dataloader), total=len(dataloader))
     for idx, data in valid_loop:
         with torch.no_grad():
-            if opt.model_opt == 'basicphaseAE':
-                data['X'] = data['X'].reshape(-1, 3, 600)
-            
-            if opt.model_opt == 'RED_PAN':
-                if opt.aug:
-                    out = model(REDPAN_aug(data['X'])[:, :3].to(device))
-                else:
-                    out = model(data['X'][:, :3].to(device))
-                
-                loss, PS_loss, M_loss = loss_fn(opt, out, (data['X'][:, 3:6], data['X'][:, 6:]), device, redpan_loss, cur_epoch)
-                task1_loss += PS_loss.cpu().item()
-                task2_loss += M_loss.cpu().item()
+            if opt.dataset_opt == 'REDPAN_dataset':
+                # for original REDPAN dataset
+                if opt.model_opt == 'RED_PAN':
+                    wf, psn, mask = data
+                    out = model(wf.to(device))
+                    loss, PS_loss, M_loss = loss_fn(opt, out, (psn, mask), device, redpan_loss, cur_epoch)
+                    task1_loss += PS_loss.cpu().item()
+                    task2_loss += M_loss.cpu().item()
+                elif opt.model_opt == 'conformer':
+                    wf, psn, mask = data
+                    out = model(wf.to(device))
+
+                    if opt.label_type == 'other':
+                        idx = np.array([0, 2])
+                        loss = loss_fn(opt, out, psn[:, idx], device)
+                    elif opt.label_type == 'p':
+                        loss = loss_fn(opt, out, psn[:, 0], device)
+                elif opt.model_opt == 'GRADUATE':
+                    wf, psn, mask, stft, seg = data
+                    out_seg, out = model(wf.to(device), stft=stft.float().to(device))
+
+                    if opt.label_type == 'other':
+                        idx = np.array([0, 2])
+                        loss = loss_fn(opt, out, psn[:, idx], device)
+                    elif opt.label_type == 'p':
+                        loss = loss_fn(opt, pred=(out_seg, out), gt=(seg, psn[:, 0]), device=device)
             else:
-                if opt.aug and Taiwan_aug:
-                    data['X'], data['y'] = REDPAN_augmentation(data['X'], data['y'])
-
-                if opt.model_opt == 'conformer_stft':
-                    out = model(data['X'].to(device), stft=data['stft'].to(device).float())
-                elif opt.model_opt == 'conformer_intensity':
-                    out, out_MT = model(data['X'].to(device))
-                elif opt.model_opt == 'GRADUATE':
-                    out_seg, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                if opt.model_opt == 'basicphaseAE':
+                    data['X'] = data['X'].reshape(-1, 3, 600)
+                
+                if opt.model_opt == 'RED_PAN':
+                    if opt.aug:
+                        out = model(REDPAN_aug(data['X'])[:, :3].to(device))
+                    else:
+                        out = model(data['X'][:, :3].to(device))
+                    
+                    loss, PS_loss, M_loss = loss_fn(opt, out, (data['X'][:, 3:6], data['X'][:, 6:]), device, redpan_loss, cur_epoch)
+                    task1_loss += PS_loss.cpu().item()
+                    task2_loss += M_loss.cpu().item()
                 else:
-                    out = model(data['X'].to(device))
+                    if opt.special_aug and Taiwan_aug:
+                        data['X'], data['y'] = REDPAN_augmentation(data['X'], data['y'])
 
-                if opt.model_opt == 'conformer_intensity':
-                    loss = loss_fn(opt, out, data['y'], device, intensity=(out_MT, data['intensity']))
-                elif opt.model_opt == 'GRADUATE':
-                    loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
-                else:
-                    loss = loss_fn(opt, out, data['y'], device)
+                    if opt.model_opt == 'conformer_stft':
+                        out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                    elif opt.model_opt == 'conformer_intensity':
+                        out, out_MT = model(data['X'].to(device))
+                    elif opt.model_opt == 'GRADUATE':
+                        out_seg, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                    else:
+                        out = model(data['X'].to(device))
+
+                    if opt.model_opt == 'conformer_intensity':
+                        loss = loss_fn(opt, out, data['y'], device, intensity=(out_MT, data['intensity']))
+                    elif opt.model_opt == 'GRADUATE':
+                        loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
+                    else:
+                        loss = loss_fn(opt, out, data['y'], device)
             
         dev_loss = dev_loss + loss.detach().cpu().item()
 
@@ -491,15 +554,30 @@ if __name__ == '__main__':
     if opt.snr_schedule or opt.level_schedule:
         train_set, dev_set, cwbsn, tsmip, stead = split_dataset(opt, return_dataset=True)
     else:
-        train_set, dev_set = split_dataset(opt, return_dataset=False)
-    
-        train_generator = set_generators(opt, train_set)
-        dev_generator = set_generators(opt, dev_set)
+        if not opt.dataset_opt == 'REDPAN_dataset':
+            train_set, dev_set = split_dataset(opt, return_dataset=False)
+        
+            train_generator = set_generators(opt, train_set)
+            dev_generator = set_generators(opt, dev_set)
 
-        # create dataloaders
-        print('creating dataloaders')
-        train_loader = DataLoader(train_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
-        dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+            # create dataloaders
+            print('creating dataloaders')
+            train_loader = DataLoader(train_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+            dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+        else:
+            basedir = '/mnt/disk4/weiwei/seismic_datasets/REDPAN_30S_pt/'
+            if opt.model_opt == 'RED_PAN' or opt.model_opt == 'eqt':
+                train_set, dev_set = REDPAN_dataset(basedir, 'train', opt.samp_ratio, 'REDPAN'), REDPAN_dataset(basedir, 'val', opt.samp_ratio, 'REDPAN')
+            else:
+                train_set, dev_set = REDPAN_dataset(basedir, 'train', opt.samp_ratio, 'REDPAN'), REDPAN_dataset(basedir, 'val', opt.samp_ratio, 'REDPAN')
+
+            print(f"train: {len(train_set)}, val: {len(dev_set)}")
+
+            # create dataloaders
+            print('creating dataloaders')
+            train_loader = DataLoader(train_set, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+            dev_loader = DataLoader(dev_set, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+        
         logging.info('train: %d, dev: %d' %(len(train_loader)*opt.batch_size, len(dev_loader)*opt.batch_size))
 
     # load checkpoint
@@ -519,13 +597,19 @@ if __name__ == '__main__':
         min_loss = checkpoint['min_loss']
         print(f'start from epoch {init_epoch}, min_loss: {min_loss}')
         logging.info('resume training at epoch: %d' %(init_epoch))
+
+        if opt.model_opt == 'RED_PAN':
+            with open(os.path.join(output_dir, "PS_loss.pkl"), 'rb') as f:
+                PS_loss = pickle.load(f)
+            with open(os.path.join(output_dir, "M_loss.pkl"), 'rb') as f:
+                M_loss = pickle.load(f)
     else:
         init_epoch = 0
         min_loss = 100000
-    
-    # RED_PAN: record loss for every epoch
-    if opt.model_opt == 'RED_PAN':
-        PS_loss, M_loss = [], []
+
+        # RED_PAN: record loss for every epoch
+        if opt.model_opt == 'RED_PAN':
+            PS_loss, M_loss = [], []
 
     stage, early_stop_cnt, schedule_cnt = opt.init_stage, 0, 0
     prev_loss, valid_loss = 1000, 1000
@@ -534,8 +618,9 @@ if __name__ == '__main__':
     for epoch in range(init_epoch, opt.epochs):
 
         # Taiwan augmentation
-        if early_stop_cnt >= 4 and not isTaiwanAug: 
+        if early_stop_cnt >= 3 and not isTaiwanAug and opt.special_aug: 
             isTaiwanAug = True
+            early_stop_cnt -= 1
             train_set, dev_set = split_dataset(opt, return_dataset=False)
     
             train_generator = set_generators(opt, train_set, Taiwan_aug=True)
@@ -577,6 +662,12 @@ if __name__ == '__main__':
             train_loss, task1_loss, task2_loss = train_loss
             PS_loss.append(task1_loss)
             M_loss.append(task2_loss)
+
+            with open(os.path.join(output_dir, 'PS_loss.pkl'), 'wb') as f:
+                pickle.dump(PS_loss, f)
+            with open(os.path.join(output_dir, 'M_loss.pkl'), 'wb') as f:
+                pickle.dump(M_loss, f)
+
         if opt.snr_schedule:
             stage, schedule_cnt, isNext = snr_stage(prev_loss, valid_loss, stage, schedule_cnt, opt.schedule_patience)
         
