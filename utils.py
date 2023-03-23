@@ -29,7 +29,7 @@ def load_dataset(opt):
         stead = sbd.STEAD(**kwargs)
         stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True)
 
-    if opt.dataset_opt == 'cwbsn' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan':
+    if opt.dataset_opt == 'cwbsn' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan' or opt.dataset_opt == 'EEW':
         # CWBSN 
         print('loading CWBSN')
         kwargs={'download_kwargs': {'basepath': '/mnt/nas2/CWBSN/seisbench/'}}
@@ -37,7 +37,7 @@ def load_dataset(opt):
         cwbsn = sbd.CWBSN(loading_method=opt.loading_method, **kwargs)
         cwbsn = apply_filter(cwbsn, snr_threshold=opt.snr_threshold, isCWBSN=True, level=opt.level, s_wave=opt.s_wave, instrument=opt.instrument)
 
-    if opt.dataset_opt == 'tsmip' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan':
+    if opt.dataset_opt == 'tsmip' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan' or opt.dataset_opt == 'EEW':
         # TSMIP
         print('loading TSMIP')
         kwargs={'download_kwargs': {'basepath': '/mnt/nas2/TSMIP/seisbench/seisbench/'}}
@@ -56,13 +56,16 @@ def load_dataset(opt):
 
         print('traces: ', len(stead))
 
-    if opt.dataset_opt == 'cwbsn' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all':
+    if opt.dataset_opt == 'cwbsn' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'EEW':
         # CWBSN noise
         print('loading CWBSN noise')
         kwargs={'download_kwargs': {'basepath': '/mnt/disk4/weiwei/seismic_datasets/CWB_noise/'}}
         cwbsn_noise = sbd.CWBSN_noise(**kwargs)
         
         cwbsn_noise = apply_filter(cwbsn_noise, instrument=opt.instrument, isNoise=True)
+
+        if opt.dataset_opt == 'EEW':
+            cwbsn_noise = apply_filter(cwbsn_noise, instrument='HL', isNoise=True)
 
         print('traces: ', len(cwbsn_noise))
 
@@ -189,7 +192,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -197,10 +200,10 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
         elif EEW:
             augmentations = [
                 sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=4000, selection="first", strategy="pad"),
-                sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
+                sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3500),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),]
@@ -210,7 +213,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -222,7 +225,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
@@ -233,7 +236,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
@@ -245,7 +248,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.STFT(),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -258,7 +261,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.STFT(),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -293,7 +296,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -306,7 +309,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -318,7 +321,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -329,7 +332,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),]
@@ -339,7 +342,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.CharStaLta(),
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
@@ -351,7 +354,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                 sbg.STFT(),
                 sbg.CharStaLta(),
                 sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
@@ -364,7 +367,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.STFT(),
                 sbg.CharStaLta(),
                 sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
@@ -376,7 +379,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
                 sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.STFT(),
                 sbg.CharStaLta(),
                 sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
@@ -426,9 +429,9 @@ def load_model(opt, device):
     elif opt.model_opt == 'GRADUATE':
         rep_KV = True if opt.rep_KV == 'True' else False
         model = GRADUATE(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, 
-                    dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, 
+                    encoder_type=opt.encoder_type, dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, 
                     decoder_type=opt.decoder_type, output_layer_type=opt.output_layer_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type,
-                    label_type=opt.label_type)
+                    label_type=opt.label_type, recover_type=opt.recover_type)
     
     return model.to(device)
     # return BalancedDataParallel(20, model.to(device))

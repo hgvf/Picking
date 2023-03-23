@@ -208,7 +208,10 @@ class REDPAN_dataset(Dataset):
         return real[:, :-1]
 
     def _TemporalSegmentation(self, wf):
-        out = TopDown(wf.clone(), 4, 1)
+        out = TopDown(wf.clone().numpy(), 4, 1)
+
+        if out[-1] != 4:
+            out = TopDown(wf.clone().numpy(), out[-1], 1)
 
         seg_edge = sorted(out[0])
 

@@ -366,6 +366,10 @@ def set_generators(opt):
         stead_test = stead.test()
         
         test = cwbsn_test + tsmip_test + stead_test
+    elif opt.dataset_opt == 'stead_noise':
+        stead_test = stead.test()
+
+        test = stead_test
 
     print(f'total traces -> test: {len(test)}')
 

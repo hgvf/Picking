@@ -21,6 +21,9 @@ from torch.utils.data import DataLoader
 import seisbench.data as sbd
 import seisbench.generate as sbg
 
+# import matplotlib.pyplot as plt
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     
@@ -28,7 +31,7 @@ def parse_args():
     parser.add_argument('--load_last', type=bool, default=False)
     parser.add_argument('--load_specific_model', type=str, default='None')
     parser.add_argument("--threshold_type", type=str, default='all')
-    parser.add_argument('--threshold_prob_start', type=float, default=0.45)
+    parser.add_argument('--threshold_prob_start', type=float, default=0.15)
     parser.add_argument('--threshold_prob_end', type=float, default=0.9)
     parser.add_argument('--threshold_trigger_start', type=int, default=5)
     parser.add_argument('--threshold_trigger_end', type=int, default=45)
@@ -44,7 +47,8 @@ def parse_args():
     parser.add_argument('--level', type=int, default=-1)
     parser.add_argument('--s_wave', type=bool, default=False)
     parser.add_argument('--instrument', type=str, default='all')
-    
+    parser.add_argument('--EEW', type=bool, default=False)
+
     parser.add_argument("--device", type=str, default='cpu')
     parser.add_argument("--batch_size", type=int, default=100)
 
@@ -266,6 +270,12 @@ def set_generators(opt, ptime=None):
 
         dev = cwbsn_dev + tsmip_dev + stead_dev
         test = cwbsn_test + tsmip_test + stead_test
+    elif opt.dataset_opt == 'EEW':        
+        cwbsn_dev, cwbsn_test = cwbsn.dev(), cwbsn.test()
+        tsmip_dev, tsmip_test = tsmip.dev(), tsmip.test()
+
+        dev = cwbsn_dev + tsmip_dev
+        test = cwbsn_test + tsmip_test
 
     print(f'total traces -> dev: {len(dev)}, test: {len(test)}')
 
@@ -276,7 +286,7 @@ def set_generators(opt, ptime=None):
     phase_dict = ['trace_p_arrival_sample']
     if not opt.allTest:
         ptime = opt.p_timestep  
-    augmentations = basic_augmentations(opt, phase_dict, ptime=ptime, test=True)
+    augmentations = basic_augmentations(opt, phase_dict=phase_dict, EEW=opt.EEW, test=True, ptime=ptime)
     
     dev_generator.add_augmentations(augmentations)
     test_generator.add_augmentations(augmentations)
@@ -357,45 +367,79 @@ def inference(opt, model, test_loader, device):
         for data in epoch:          
             snr_total += calc_snr(data, isREDPAN)
             intensity_total += calc_inten(data, isREDPAN)
+            # plt.subplot(211)
+            # plt.plot(data['X'][0, :3].T)
+            # plt.subplot(212)
+            # plt.plot(data['y'][0].T)
+            # plt.savefig(f"./tmp/{idx}.png")
+            # plt.clf()
 
             with torch.no_grad():
-                if opt.model_opt == 'basicphaseAE':
-                    out = sliding_prediction(opt, model, data)
-                    target = data['y'][:, 0].squeeze().numpy()
+                if opt.dataset_opt == 'REDPAN_dataset':
+                    if opt.model_opt == 'RED_PAN':
+                        wf, psn, mask = data
+                        out_PS, out_M = model(wf.to(device))
 
-                    pred += out
-                    gt += [target[i] for i in range(len(target))]
-                elif opt.model_opt == 'RED_PAN':
-                    out_PS, out_M = model(data['X'][:, :3].to(device))
-                    target = data['X'][:, 3].squeeze().numpy()
+                        pred += [out_PS[i, 0].detach().squeeze().cpu().numpy() for i in range(out_PS.shape[0])]
+                        gt += [psn[i, 0] for i in range(target.shape[0])]
+                    elif opt.model_opt == 'conformer':
+                        wf, psn, mask = data
+                        out = model(wf.to(device))
 
-                    pred += [out_PS[i, 0].detach().squeeze().cpu().numpy() for i in range(out_PS.shape[0])]
-                    gt += [target[i] for i in range(target.shape[0])]
-            
-                else:
-                    if opt.model_opt == 'conformer_intensity':
-                        out, out_MT = model(data['X'].to(device))
-                    elif opt.model_opt == 'conformer_stft':
-                        out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        if opt.label_type == 'other':
+                            pred += [out[i, :, 0].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
+                            gt += [psn[i, 0] for i in range(target.shape[0])]
+                        elif opt.label_type == 'p':
+                            pred += [out[i].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
+                            gt += [psn[i, 0] for i in range(target.shape[0])]
                     elif opt.model_opt == 'GRADUATE':
-                        _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        wf, psn, mask, stft, seg = data
+                        out_seg, out = model(wf.to(device), stft=stft.float().to(device))
+
+                        if opt.label_type == 'other':
+                            pred += [out[i, :, 0].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
+                            gt += [psn[i, 0] for i in range(target.shape[0])]
+                        elif opt.label_type == 'p':
+                            pred += [out[i].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
+                            gt += [psn[i, 0] for i in range(target.shape[0])]
+                else:
+                    if opt.model_opt == 'basicphaseAE':
+                        out = sliding_prediction(opt, model, data)
+                        target = data['y'][:, 0].squeeze().numpy()
+
+                        pred += out
+                        gt += [target[i] for i in range(len(target))]
+                    elif opt.model_opt == 'RED_PAN':
+                        out_PS, out_M = model(data['X'][:, :3].to(device))
+                        target = data['X'][:, 3].squeeze().numpy()
+
+                        pred += [out_PS[i, 0].detach().squeeze().cpu().numpy() for i in range(out_PS.shape[0])]
+                        gt += [target[i] for i in range(target.shape[0])]
+                
                     else:
-                        out = model(data['X'].to(device))
+                        if opt.model_opt == 'conformer_intensity':
+                            out, out_MT = model(data['X'].to(device))
+                        elif opt.model_opt == 'conformer_stft':
+                            out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        elif opt.model_opt == 'GRADUATE':
+                            _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        else:
+                            out = model(data['X'].to(device))
 
-                    if opt.model_opt == 'eqt':
-                        out = out[1].detach().squeeze().cpu().numpy()
-                    elif opt.model_opt == 'phaseNet':
-                        out = out[:, 0].detach().squeeze().cpu().numpy()
-                    else:
-                        if opt.label_type == 'p':
-                            out = out.detach().squeeze().cpu().numpy()
-                        elif opt.label_type == 'other':
-                            out = out[:, :, 0].detach().squeeze().cpu().numpy()                
+                        if opt.model_opt == 'eqt':
+                            out = out[1].detach().squeeze().cpu().numpy()
+                        elif opt.model_opt == 'phaseNet':
+                            out = out[:, 0].detach().squeeze().cpu().numpy()
+                        else:
+                            if opt.label_type == 'p':
+                                out = out.detach().squeeze().cpu().numpy()
+                            elif opt.label_type == 'other':
+                                out = out[:, :, 0].detach().squeeze().cpu().numpy()                
 
-                    target = data['y'][:, 0].squeeze().numpy()
+                        target = data['y'][:, 0].squeeze().numpy()
 
-                    pred += [out[i] for i in range(out.shape[0])]
-                    gt += [target[i] for i in range(target.shape[0])]
+                        pred += [out[i] for i in range(out.shape[0])]
+                        gt += [target[i] for i in range(target.shape[0])]
             
     return pred, gt, snr_total, intensity_total
 
@@ -460,7 +504,7 @@ if __name__ == '__main__':
     if opt.p_timestep != 750:
         subpath = subpath + '_' + str(opt.p_timestep)
     if opt.allTest:
-        subpath = subpath + 'allCase_testing_' + str(opt.level)
+        subpath = subpath + '_allCase_testing_' + str(opt.level)
     subpath = subpath + '.log'
     print('logpath: ', subpath)
     log_path = os.path.join(output_dir, subpath)
@@ -478,9 +522,16 @@ if __name__ == '__main__':
     # load datasets
     if not opt.allTest:
         print('loading datasets')
-        dev_generator, test_generator = set_generators(opt)
-        dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
-        test_loader = DataLoader(test_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
+        if not opt.dataset_opt == 'REDPAN_dataset':
+            dev_generator, test_generator = set_generators(opt)
+            dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
+            test_loader = DataLoader(test_generator, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
+        else:
+            basedir = '/mnt/disk4/weiwei/seismic_datasets/REDPAN_30S_pt/'
+            if opt.model_opt == 'RED_PAN' or opt.model_opt == 'eqt':
+                test_set = REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
+            else:
+                test_set = REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
 
     # load model
     model = load_model(opt, device)
@@ -578,8 +629,6 @@ if __name__ == '__main__':
         best_prob = opt.threshold_prob_start
         best_trigger = opt.threshold_trigger_start
 
-    # start predicting on test set
-    if not opt.allTest:
         logging.info('Inference on testing set')
         pred, gt, snr_total, intensity_total = inference(opt, model, test_loader, device)
         fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
@@ -604,10 +653,11 @@ if __name__ == '__main__':
     if opt.allTest:
         logging.info('configs: ')
         logging.info(opt)
-        logging.info('dataset: ', opt.dataset_opt)
+        logging.info('dataset: %s' %(opt.dataset_opt))
         
         print('Start testing...')
         ptime_list = [750, 1500, 2000, 2500, 2750]
+        
         best_mode = opt.threshold_type
         best_prob = opt.threshold_prob_start
         best_trigger = opt.threshold_trigger_start

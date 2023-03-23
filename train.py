@@ -61,7 +61,7 @@ def parse_args():
     parser.add_argument('--init_stage', type=int, default=0)
     parser.add_argument('--s_wave', type=bool, default=False)
     parser.add_argument('--instrument', type=str, default='all')
-    parser.add_argument('--EEW', type=bool, default='False')
+    parser.add_argument('--EEW', type=bool, default=False)
     parser.add_argument('--samp_ratio', type=float, default=1.0)
     parser.add_argument('--special_aug', type=bool, default=False)
     
@@ -115,7 +115,8 @@ def parse_args():
     parser.add_argument('--rep_KV', type=str, default='False')
     parser.add_argument('--segmentation_ratio', type=float, default=0.35)
     parser.add_argument('--seg_proj_type', type=str, default='crossattn')
-
+    parser.add_argument('--recover_type', type=str, default='crossattn')
+    
     opt = parser.parse_args()
 
     return opt
@@ -178,13 +179,19 @@ def split_dataset(opt, return_dataset=False):
 
         train = cwbsn_train + tsmip_train + stead_train + cwbsn_noise_train
         dev = cwbsn_dev + tsmip_dev + stead_dev + cwbsn_noise_dev
-    if opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'redpan':        
+    elif opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'redpan':        
         cwbsn_train, cwbsn_dev, _ = cwbsn.train_dev_test()
         tsmip_train, tsmip_dev, _ = tsmip.train_dev_test()
         cwbsn_noise_train, cwbsn_noise_dev, _ = cwbsn_noise.train_dev_test()
 
         train = cwbsn_train + tsmip_train + cwbsn_noise_train
         dev = cwbsn_dev + tsmip_dev + cwbsn_noise_dev
+    elif opt.dataset_opt == 'EEW':        
+        cwbsn_train, cwbsn_dev, _ = cwbsn.train_dev_test()
+        tsmip_train, tsmip_dev, _ = tsmip.train_dev_test()
+
+        train = cwbsn_train + tsmip_train
+        dev = cwbsn_dev + tsmip_dev
     elif opt.dataset_opt == 'cwbsn':
         cwbsn_train, cwbsn_dev, _ = cwbsn.train_dev_test()
         stead_train, stead_dev, _ = stead.train_dev_test()
@@ -618,7 +625,7 @@ if __name__ == '__main__':
     for epoch in range(init_epoch, opt.epochs):
 
         # Taiwan augmentation
-        if early_stop_cnt >= 3 and not isTaiwanAug and opt.special_aug: 
+        if (early_stop_cnt >= 3 or opt.special_aug) and not isTaiwanAug: 
             isTaiwanAug = True
             early_stop_cnt -= 1
             train_set, dev_set = split_dataset(opt, return_dataset=False)
@@ -630,6 +637,11 @@ if __name__ == '__main__':
             print('creating Taiwan augmentation dataloaders')
             train_loader = DataLoader(train_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
             dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+
+            # keep the original model checkpoint
+            if epoch > 3:
+                ori = os.path.join(output_dir, 'model.pt')
+                os.rename(ori, os.path.join(output_dir, 'beforeTaiwanAug.pt'))
 
         # SNR schedule learning
         if opt.snr_schedule or opt.level_schedule:
@@ -655,8 +667,8 @@ if __name__ == '__main__':
             train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, redpan_loss=(PS_loss, M_loss))
             valid_loss = valid(model, dev_loader, device, epoch, opt, redpan_loss=(PS_loss, M_loss))
         else:
-            train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, isTaiwanAug)
-            valid_loss = valid(model, dev_loader, device, epoch, opt, isTaiwanAug)
+            train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, Taiwan_aug=isTaiwanAug)
+            valid_loss = valid(model, dev_loader, device, epoch, opt, Taiwan_aug=isTaiwanAug)
 
         if opt.model_opt == 'RED_PAN':
             train_loss, task1_loss, task2_loss = train_loss

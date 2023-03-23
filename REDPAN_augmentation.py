@@ -159,7 +159,8 @@ def REDPAN_augmentation(data, gt):
             data, gt = MMWA_Taiwan(data, gt)
         elif prob >= 0.3 and prob < 0.6:
             data, gt = EEWA_Taiwan(data, gt)
-    except:
+    except Exception as e:
+        # print(e)
         pass
 
     return data, gt

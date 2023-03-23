@@ -246,6 +246,86 @@ class Emb(nn.Module):
         
         return emb
 
+class Residual_Unet(nn.Module):
+    def __init__(self, conformer_class, nhead, d_ffn ,dec_layers):
+        super(Residual_Unet, self).__init__()
+        
+        self.conv1 = nn.Sequential(nn.Conv1d(conformer_class, conformer_class*3, kernel_size=3, stride=2),
+                                       nn.BatchNorm1d(conformer_class*3),
+                                       nn.ReLU(),)
+        
+        self.conv2 = nn.Sequential(nn.Conv1d(conformer_class*3, conformer_class*5, kernel_size=5, stride=3),
+                                       nn.BatchNorm1d(conformer_class*5),
+                                       nn.ReLU(),)
+        
+        self.conv3 = nn.Sequential(nn.Conv1d(conformer_class*5, conformer_class*8, kernel_size=5, stride=3),
+                                       nn.BatchNorm1d(conformer_class*8),
+                                       nn.ReLU(),)
+        
+        self.bottleneck_layer = nn.TransformerEncoderLayer(d_model=conformer_class*8, nhead=nhead, dim_feedforward=d_ffn)
+        self.bottleneck = nn.TransformerEncoder(self.bottleneck_layer, num_layers=dec_layers)
+        
+        self.up1 = nn.Sequential(nn.ConvTranspose1d(conformer_class*8, conformer_class*5, kernel_size=5, stride=3),
+                                       nn.BatchNorm1d(conformer_class*5),
+                                       nn.ReLU(),)
+        
+        self.up2 = nn.Sequential(nn.ConvTranspose1d(conformer_class*10, conformer_class*3, kernel_size=5, stride=3),
+                                       nn.BatchNorm1d(conformer_class*3),
+                                       nn.ReLU(),)
+        
+        self.up3 = nn.Sequential(nn.ConvTranspose1d(conformer_class*6, conformer_class, kernel_size=3, stride=2),
+                                       nn.BatchNorm1d(conformer_class),
+                                       nn.ReLU(),)
+        self.out = nn.Sequential(nn.Upsample(3000),
+                                       nn.Conv1d(conformer_class*2, conformer_class*2, kernel_size=3, padding='same'),
+                                       nn.BatchNorm1d(conformer_class*2),
+                                       nn.ReLU(),
+                                       nn.Conv1d(conformer_class*2, conformer_class, kernel_size=3, padding='same'),
+                                       nn.BatchNorm1d(conformer_class),
+                                       nn.ReLU(),)
+        
+    def forward(self, inp):
+        
+        # print('inp: ', inp.shape)
+        
+        conv1_out = self.conv1(inp)
+        # print('conv1: ', conv1_out.shape)
+        
+        conv2_out = self.conv2(conv1_out)
+        # print('conv2: ', conv2_out.shape)
+        
+        conv3_out = self.conv3(conv2_out)
+        # print('conv3: ', conv3_out.shape)
+        
+        bottleneck_out = self.bottleneck(conv3_out.permute(0,2,1)).permute(0,2,1)
+        # print("bottleneck: ", bottleneck_out.shape)
+        
+        up1_out = self.up1(bottleneck_out)
+        # print("up1: ", up1_out.shape)
+        
+        # concat up1_out with conv2_out
+        out = torch.cat((conv2_out[:, :, 1:-1], up1_out), dim=1)
+        # print("concat1:" , out.shape)
+        
+        up2_out = self.up2(out)
+        # print('up2: ', up2_out.shape)
+        
+        # concat up2_out with conv1_out
+        out = torch.cat((conv1_out[:, :, 3:-3], up2_out), dim=1)
+        # print("concat2:" , out.shape)
+        
+        up3_out = self.up3(out)
+        # print('up3: ', up3_out.shape)
+        
+        # concat up3_out with inp
+        out = torch.cat((inp[:, :, 6:-7], up3_out), dim=1)
+        # print("concat3:" , out.shape)
+        
+        out = self.out(out)
+        # print('out: ', out.shape)
+        
+        return out
+
 class SingleP_transformer_window(nn.Module):
     def __init__(self, d_ffn, n_head, enc_layers, window_size, dropout=0.1):
         super(SingleP_transformer_window, self).__init__()
@@ -804,7 +884,9 @@ class AntiCopy_Conformer(nn.Module):
         return out
 
 class GRADUATE(nn.Module):
-    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, cross_attn_type, seg_proj_type='crossattn', decoder_type='crossattn', output_layer_type='fc', rep_KV=True, label_type='p'):
+    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, 
+                 cross_attn_type, seg_proj_type='crossattn', encoder_type='conformer', decoder_type='crossattn', output_layer_type='fc', 
+                 rep_KV=True, label_type='p', recover_type="crossattn"):
         super(GRADUATE, self).__init__()
         
         dim_stft = 32
@@ -815,8 +897,23 @@ class GRADUATE(nn.Module):
         # encoded representation 會當作 decoder's Key, Value
         self.rep_KV = rep_KV
         self.seg_proj_type = seg_proj_type
+        self.encoder_type = encoder_type
         
-        self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+        # down-sample layer
+        if encoder_type == 'unet_conformer':
+            self.down_conv = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=3, stride=2),
+                                           nn.BatchNorm1d(d_model*3),
+                                           nn.ReLU(),
+                                           nn.Conv1d(d_model*3, d_model*5, kernel_size=5, stride=3),
+                                           nn.BatchNorm1d(d_model*5),
+                                           nn.ReLU(),
+                                           nn.Conv1d(d_model*5, d_model*8, kernel_size=5, stride=3),
+                                           nn.BatchNorm1d(d_model*8),
+                                           nn.ReLU(),)
+            self.conformer = Conformer(subsample=False, num_classes=conformer_class, input_dim=d_model*8, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+        else:
+            self.conformer = Conformer(num_classes=conformer_class, input_dim=input_dim, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+        
         if seg_proj_type == 'crossattn':
             self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
             self.seg_crossattn = cross_attn(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class)
@@ -873,6 +970,45 @@ class GRADUATE(nn.Module):
             self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
             self.stft_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, dim_stft, conformer_class, d_ffn)
 
+        self.recover_type = recover_type
+        if recover_type == 'upsample':
+            self.rep_upconv = nn.Sequential(nn.Upsample(scale_factor=2),
+                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                                       nn.BatchNorm1d(conformer_class),
+                                       nn.ReLU(),
+                                       nn.Upsample(scale_factor=2),
+                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                                       nn.BatchNorm1d(conformer_class),
+                                       nn.ReLU(),
+                                       nn.Upsample(scale_factor=2),
+                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                                       nn.BatchNorm1d(conformer_class),
+                                       nn.ReLU(),
+                                       nn.Upsample(scale_factor=2),
+                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                                       nn.BatchNorm1d(conformer_class),
+                                       nn.ReLU(),
+                                       nn.Upsample(3000),
+                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                                       nn.BatchNorm1d(conformer_class),
+                                       nn.ReLU(),)
+            self.stft_upconv = nn.Sequential(nn.Upsample(scale_factor=2),
+                                            nn.Conv1d(dim_stft, dim_stft, kernel_size=3, padding='same'),
+                                            nn.BatchNorm1d(dim_stft),
+                                            nn.ReLU(),
+                                            nn.Upsample(scale_factor=2),
+                                            nn.Conv1d(dim_stft, dim_stft, kernel_size=3, padding='same'),
+                                            nn.BatchNorm1d(dim_stft),
+                                            nn.ReLU(),
+                                            nn.Upsample(scale_factor=2),
+                                            nn.Conv1d(dim_stft, conformer_class, kernel_size=3, padding='same'),
+                                            nn.BatchNorm1d(conformer_class),
+                                            nn.ReLU(),
+                                            nn.Upsample(3000),
+                                            nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                                            nn.BatchNorm1d(conformer_class),
+                                            nn.ReLU(),)
+
         # =========================================== #
         #                   Decoder                   #
         # =========================================== #    
@@ -928,6 +1064,9 @@ class GRADUATE(nn.Module):
                                       nn.ReLU(),
                                       nn.Dropout(0.1),)
             
+        elif decoder_type == 'residual_unet':
+            self.decoder = Residual_Unet(conformer_class, nhead, d_ffn, dec_layers)
+
         # =========================================== #
         #                    Output                   #
         # =========================================== #
@@ -955,11 +1094,11 @@ class GRADUATE(nn.Module):
         # wave: (batch, 3000, 12)
         wave = wave.permute(0,2,1)
 
+        if self.encoder_type == 'unet_conformer':
+            wave = self.down_conv(wave.permute(0,2,1)).permute(0,2,1)
+
         out, _ = self.conformer(wave, 3000)
-        
-        plt.figure(figsize=(12, 20))
-        plt.matshow(out[0].T.detach().numpy(), aspect='auto')
-        plt.show()
+  
         # temporal segmentation
         if self.seg_proj_type == 'crossattn':
             seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
@@ -982,13 +1121,16 @@ class GRADUATE(nn.Module):
             crossattn_out = self.crossattn(stft_rep_posEmb, stft_rep_out, stft_rep_out)
 
         elif self.cross_attn_type == 2:
-            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
-            rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
-
-            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
-            rep_out = self.rep_pos_emb(rep_posEmb, out, out)
+            if self.recover_type == 'upsample':
+                stft_out = self.stft_upconv(stft.permute(0,2,1)).permute(0,2,1)
+                rep_out = self.rep_upconv(out.permute(0,2,1)).permute(0,2,1)
+            else:
+                stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+                rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+                stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+                rep_out = self.rep_pos_emb(rep_posEmb, out, out)
             crossattn_out = self.crossattn(stft_out, rep_out, rep_out)
-
+            
         elif self.cross_attn_type == 3:    
             rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
             stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
@@ -1000,6 +1142,8 @@ class GRADUATE(nn.Module):
         if self.decoder_type == 'unet':
             dec_tmp = self.down_decoder(crossattn_out.permute(0,2,1)).permute(0,2,1)
             dec_out = self.up_decoder(self.decoder(dec_tmp).permute(0,2,1)).permute(0,2,1)
+        elif self.decoder_type == 'residual_unet':
+            dec_out = self.decoder(crossattn_out.permute(0,2,1)).permute(0,2,1)
         else:
             for i, layer in enumerate(self.decoder):
                 if i == 0:
