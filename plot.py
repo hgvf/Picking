@@ -17,6 +17,10 @@ from torch.utils.data import DataLoader
 import seisbench.data as sbd
 import seisbench.generate as sbg
 
+import sys
+sys.path.append('./eqt')
+from load_eqt import *
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -86,7 +90,9 @@ def parse_args():
     parser.add_argument('--rep_KV', type=str, default='False')
     parser.add_argument('--segmentation_ratio', type=float, default=0.35)
     parser.add_argument('--seg_proj_type', type=str, default='crossattn')
-
+    parser.add_argument('--recover_type', type=str, default='crossattn')
+    parser.add_argument('--res_dec', type=bool, default=False)
+    
     opt = parser.parse_args()
 
     return opt
@@ -310,6 +316,13 @@ def evaluation(pred, gt, threshold_prob, threshold_trigger, sample_tolerant, thr
             pred_isTrigger = True
         else:
             pred_trigger = 0
+    elif threshold_type == 'max':
+        pred_trigger = np.argmax(pred)
+
+        if pred[pred_trigger] >= threshold_prob:
+            pred_isTrigger = True
+        else:
+            pred_trigger = 0
 
     left_edge = (gt_trigger - sample_tolerant) if (gt_trigger - sample_tolerant) >= 0 else 0
     right_edge = (gt_trigger + sample_tolerant) if (gt_trigger + sample_tolerant) <= 3000 else 3000
@@ -419,10 +432,16 @@ if __name__ == '__main__':
     # load model
     model = load_model(opt, device)
 
-    output_dir = os.path.join('./results', opt.save_path)
-    model_path = os.path.join(output_dir, 'model.pt')
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['model'], strict=False)
+    if opt.save_path != 'eqt_original':
+        output_dir = os.path.join('./results', opt.save_path)
+        model_path = os.path.join(output_dir, 'model.pt')
+        checkpoint = torch.load(model_path, map_location=device)
+        model.load_state_dict(checkpoint['model'], strict=False)
+    else:
+        output_dir = os.path.join('./results', opt.save_path)
+        model_path = os.path.join(output_dir, 'model.pt')
+        checkpoint = torch.load(model_path, map_location=device)
+        model = load_my_state_dict(model, checkpoint)
 
     model.eval()
     # step_tp, step_fp, step_fn, step_tn = 0, 0, 0, 0
@@ -483,19 +502,19 @@ if __name__ == '__main__':
                     if opt.model_opt == 'GRADUATE':
                         out_seg, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
 
-                        plt.figure(figsize=(9, 15))
-                        plt.subplot(311)
-                        plt.plot(data['X'][0, :3].T)
-                        plt.title('ZNE')
-                        plt.subplot(312)
-                        plt.ylim([-0.05, 1.05])
-                        plt.plot(out_seg[0].detach().cpu().numpy())
-                        plt.title('segmentation prediction')
-                        plt.subplot(313)
-                        plt.plot(data['seg'][0].numpy())
-                        plt.title('segmentation ground-truth')
-                        plt.savefig(f"{idx}.png")
-                        plt.clf()
+                        # plt.figure(figsize=(9, 15))
+                        # plt.subplot(311)
+                        # plt.plot(data['X'][0, :3].T)
+                        # plt.title('ZNE')
+                        # plt.subplot(312)
+                        # plt.ylim([-0.05, 1.05])
+                        # plt.plot(out_seg[0].detach().cpu().numpy())
+                        # plt.title('segmentation prediction')
+                        # plt.subplot(313)
+                        # plt.plot(data['seg'][0].numpy())
+                        # plt.title('segmentation ground-truth')
+                        # plt.savefig(f"{idx}.png")
+                        # plt.clf()
                     else:
                         out = model(data['X'])
                     

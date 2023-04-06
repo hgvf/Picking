@@ -10,6 +10,13 @@ import bisect
 import requests
 from tqdm import tqdm
 
+import sys
+sys.path.append('./RED-PAN')
+from REDPAN_dataset import *
+
+sys.path.append('./eqt')
+from load_eqt import *
+
 from calc import calc_intensity
 from snr import snr_p
 from utils import *
@@ -58,7 +65,8 @@ def parse_args():
     parser.add_argument('--dataset_opt', type=str, default='taiwan')
     parser.add_argument('--loading_method', type=str, default='full')
     parser.add_argument('--normalize_opt', type=str, default='peak')
-
+    parser.add_argument('--isConformer', type=bool, default=False)
+    
     # custom hyperparameters
     parser.add_argument('--conformer_class', type=int, default=16)
     parser.add_argument('--d_ffn', type=int, default=256)
@@ -95,6 +103,8 @@ def parse_args():
     parser.add_argument('--rep_KV', type=str, default='False')
     parser.add_argument('--segmentation_ratio', type=float, default=0.35)
     parser.add_argument('--seg_proj_type', type=str, default='crossattn')
+    parser.add_argument('--recover_type', type=str, default='crossattn')
+    parser.add_argument('--res_dec', type=bool, default=False)
 
     opt = parser.parse_args()
 
@@ -124,7 +134,7 @@ def toLine(save_path, precision, recall, fscore, mean, variance):
     except Exception as e:
         print(e)
 
-def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx, threshold_prob, threshold_trigger, sample_tolerant, mode):
+def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx, threshold_prob, threshold_trigger, sample_tolerant, mode, isREDPAN_dataset=False):
     tp, fp, tn, fn = 0, 0, 0, 0 
     diff = []
     abs_diff = []
@@ -148,14 +158,20 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
         pred_isTrigger = False
         gt_isTrigger = False
         gt_trigger = 0
-        snr_cur = snr_idx[i]
-        intensity_cur = intensity_idx[i]
 
-        c = np.where(gt[i] == 1)
+        if isREDPAN_dataset:
+            snr_cur = 0
+            intensity_cur = 0
+        else:
+            snr_cur = snr_idx[i]
+            intensity_cur = intensity_idx[i]
 
-        if len(c[0]) > 0:
+        if not np.all(gt[i] == 0):
             gt_isTrigger = True            
-            gt_trigger = c[0][0]
+            gt_trigger = np.argmax(gt[i])
+            if gt[i][gt_trigger] < 0.3:
+                gt_isTrigger = False
+                gt_trigger = 0
 
         if mode == 'single':
             a = np.where(pred[i] >= threshold_prob, 1, 0)
@@ -176,7 +192,8 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
             pred_trigger = 0
             if c.any():
                 tri = np.where(c==1)
-                pred_trigger = tri[0][0]-threshold_trigger+1
+                # pred_trigger = tri[0][0]-threshold_trigger+1
+                pred_trigger = tri[0][0]
                 pred_isTrigger = True
                 
         elif mode == 'continue':
@@ -184,13 +201,22 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
             
             a = pd.Series(tmp)    
             data = a.groupby(a.eq(0).cumsum()).cumsum().tolist()
-
+            pred_trigger = 0
             if threshold_trigger in data:
-                pred_trigger = data.index(threshold_trigger)-threshold_trigger+1
+                # pred_trigger = data.index(threshold_trigger)-threshold_trigger+1
+                pred_trigger = data.index(threshold_trigger)
                 pred_isTrigger = True
             else:
                 pred_trigger = 0
-        
+
+        elif mode == 'max':
+            pred_trigger = np.argmax(pred[i])
+
+            if pred[i][pred_trigger] >= threshold_prob:
+                pred_isTrigger = True
+            else:
+                pred_trigger = 0
+
         left_edge = (gt_trigger - sample_tolerant) if (gt_trigger - sample_tolerant) >= 0 else 0
         right_edge = (gt_trigger + sample_tolerant) if (gt_trigger + sample_tolerant) <= 3000 else 2999
 
@@ -365,8 +391,10 @@ def inference(opt, model, test_loader, device):
     idx = 0
     with tqdm(test_loader) as epoch:
         for data in epoch:          
-            snr_total += calc_snr(data, isREDPAN)
-            intensity_total += calc_inten(data, isREDPAN)
+            if not opt.dataset_opt == 'REDPAN_dataset':
+                snr_total += calc_snr(data, isREDPAN)
+                intensity_total += calc_inten(data, isREDPAN)
+
             # plt.subplot(211)
             # plt.plot(data['X'][0, :3].T)
             # plt.subplot(212)
@@ -381,27 +409,27 @@ def inference(opt, model, test_loader, device):
                         out_PS, out_M = model(wf.to(device))
 
                         pred += [out_PS[i, 0].detach().squeeze().cpu().numpy() for i in range(out_PS.shape[0])]
-                        gt += [psn[i, 0] for i in range(target.shape[0])]
+                        gt += [psn[i, 0] for i in range(wf.shape[0])]
                     elif opt.model_opt == 'conformer':
                         wf, psn, mask = data
                         out = model(wf.to(device))
 
                         if opt.label_type == 'other':
                             pred += [out[i, :, 0].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
-                            gt += [psn[i, 0] for i in range(target.shape[0])]
+                            gt += [psn[i, 0] for i in range(wf.shape[0])]
                         elif opt.label_type == 'p':
                             pred += [out[i].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
-                            gt += [psn[i, 0] for i in range(target.shape[0])]
+                            gt += [psn[i, 0] for i in range(wf.shape[0])]
                     elif opt.model_opt == 'GRADUATE':
                         wf, psn, mask, stft, seg = data
                         out_seg, out = model(wf.to(device), stft=stft.float().to(device))
 
                         if opt.label_type == 'other':
                             pred += [out[i, :, 0].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
-                            gt += [psn[i, 0] for i in range(target.shape[0])]
+                            gt += [psn[i, 0] for i in range(wf.shape[0])]
                         elif opt.label_type == 'p':
                             pred += [out[i].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
-                            gt += [psn[i, 0] for i in range(target.shape[0])]
+                            gt += [psn[i, 0] for i in range(wf.shape[0])]
                 else:
                     if opt.model_opt == 'basicphaseAE':
                         out = sliding_prediction(opt, model, data)
@@ -447,12 +475,18 @@ def score(pred, gt, snr_total, intensity_total, mode, opt, threshold_prob, thres
     # 依照 snr 不同分別計算數據，先將原本的 snr level 轉換成對應 index
     # snr_level = list(np.arange(0.0, 3.5, 0.25)) + list(np.arange(3.5, 5.5, 0.5))
     snr_level = [-9999] + list(np.arange(-1.0, 0.0, 0.5)) + list(np.arange(0.0, 3.5, 0.25)) + list(np.arange(3.5, 5.5, 0.5))
-    snr_idx = convert_snr_to_level(snr_level, snr_total)
-    
     intensity_level = [-1, 0, 1, 2, 3, 4, 5, 5.5, 6, 6.5, 7]
-    intensity_idx = convert_intensity_to_level(intensity_level, intensity_total)
 
-    tp, fp, tn, fn, diff, abs_diff, res, snr_stat, intensity_stat, case_stat = evaluation(pred, gt, snr_idx, len(snr_level), intensity_idx, len(intensity_level), threshold_prob, threshold_trigger, opt.sample_tolerant, mode)
+    if not opt.dataset_opt == 'REDPAN_dataset':    
+        snr_idx = convert_snr_to_level(snr_level, snr_total)
+        intensity_idx = convert_intensity_to_level(intensity_level, intensity_total)
+
+    if not opt.dataset_opt == 'REDPAN_dataset':
+        tp, fp, tn, fn, diff, abs_diff, res, snr_stat, intensity_stat, case_stat = evaluation(pred, gt, snr_idx, len(snr_level), intensity_idx, len(intensity_level), threshold_prob, threshold_trigger, opt.sample_tolerant, mode)
+    else:
+        snr_idx, intensity_idx = 0, 0
+
+        tp, fp, tn, fn, diff, abs_diff, res, snr_stat, intensity_stat, case_stat = evaluation(pred, gt, snr_idx, len(snr_level), intensity_idx, len(intensity_level), threshold_prob, threshold_trigger, opt.sample_tolerant, mode, isREDPAN_dataset=True)
 
     # print('tp=%d, fp=%d, tn=%d, fn=%d' %(tp, fp, tn, fn))
 
@@ -529,25 +563,35 @@ if __name__ == '__main__':
         else:
             basedir = '/mnt/disk4/weiwei/seismic_datasets/REDPAN_30S_pt/'
             if opt.model_opt == 'RED_PAN' or opt.model_opt == 'eqt':
-                test_set = REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
+                dev_set, test_set = REDPAN_dataset(basedir, 'val', 1.0, 'REDPAN'), REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
             else:
-                test_set = REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
+                dev_set, test_set = REDPAN_dataset(basedir, 'val', 1.0, 'REDPAN'), REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
+            
+            # create dataloaders
+            print('creating dataloaders')
+            dev_loader = DataLoader(dev_set, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
+            test_loader = DataLoader(test_set, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
 
     # load model
     model = load_model(opt, device)
 
-    if opt.load_specific_model != 'None':
-        print('loading ', opt.load_specific_model)
-        model_path = os.path.join(model_dir, opt.load_specific_model+'.pt')
-    elif not opt.load_last:
-        print('loading best checkpoint')
-        model_path = os.path.join(model_dir, 'model.pt')
-    else:
-        print('loading last checkpoint')
-        model_path = os.path.join(model_dir, 'checkpoint_last.pt')
+    if opt.save_path != 'eqt_original':
+        if opt.load_specific_model != 'None':
+            print('loading ', opt.load_specific_model)
+            model_path = os.path.join(model_dir, opt.load_specific_model+'.pt')
+        elif not opt.load_last:
+            print('loading best checkpoint')
+            model_path = os.path.join(model_dir, 'model.pt')
+        else:
+            print('loading last checkpoint')
+            model_path = os.path.join(model_dir, 'checkpoint_last.pt')
 
-    checkpoint = torch.load(model_path, map_location=device)
-    model.load_state_dict(checkpoint['model'], strict=False)
+        checkpoint = torch.load(model_path, map_location=device)
+        model.load_state_dict(checkpoint['model'], strict=False)
+    else:
+        model_path = os.path.join(model_dir, 'model.pt')
+        checkpoint = torch.load("/mnt/disk4/weiwei/newstead11.pt", map_location=device)
+        model = load_my_state_dict(model, checkpoint)
 
     # start finding
     max_fscore = 0.0
@@ -556,13 +600,15 @@ if __name__ == '__main__':
     back = opt.sample_tolerant
 
     if opt.threshold_type == 'all':
-        mode = ['single', 'continue', 'avg']  # avg, continue
+        mode = ['max', 'single', 'continue', 'avg']  # avg, continue
     elif opt.threshold_type == 'avg':
         mode = ['avg']
     elif opt.threshold_type == 'continue':
         mode = ['continue']
     elif opt.threshold_type == 'single':
         mode = ['single']
+    elif opt.threshold_type == 'max':
+        mode = ['max']
 
     if not opt.do_test and not opt.allTest:
         # find the best criteria
@@ -616,7 +662,7 @@ if __name__ == '__main__':
                         best_prob = prob
                         best_trigger = trigger
 
-                    if m == 'single':
+                    if m == 'single' or m == 'max':
                         break
             
         logging.info('======================================================')
@@ -624,7 +670,7 @@ if __name__ == '__main__':
         logging.info(f"mode: {best_mode}, prob: {best_prob}, trigger: {best_trigger}, fscore: {best_fscore}")
         logging.info('======================================================')
 
-    if opt.do_test:
+    if opt.do_test or opt.dataset_opt == 'stead' or opt.dataset_opt == 'REDPAN_dataset':
         best_mode = opt.threshold_type
         best_prob = opt.threshold_prob_start
         best_trigger = opt.threshold_trigger_start

@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import random
+import glob
 
 def parse_score(filepath):
     with open(filepath, 'r') as f:
@@ -60,6 +61,26 @@ def plot_compare(res, title):
     plt.savefig('F1score.png')
     plt.clf()
 
+def plot_bar(res, label, idx):
+    ptime = [750, 1500, 2000, 2500, 2750]
+    precision, recall, fscore = [], [], []
+    width = 0.25
+    shift = 5
+    for r in res:
+        precision.append(r['precision'][idx])
+        recall.append(r['recall'][idx])
+        fscore.append(r['fscore'][idx])
+   
+    plt.figure(figsize=(10, 5))
+    plt.bar(np.arange(len(label))*shift, recall, color='r', width=0.2, align='center', label='Recall', tick_label=label)
+    plt.bar(np.arange(len(label))*shift-width, precision, color='b', width=0.2, align='center', label='Precision')
+    plt.bar(np.arange(len(label))*shift+width, fscore, color='y', width=0.2, align='center', label='Fscore')
+    plt.hlines(y=1.0, xmin=-0.5, xmax=20.5, linewidth=2, color='grey', linestyles='dashed')
+    plt.legend(loc='lower right', prop={'size': 8})
+    plt.ylabel('Score')
+    plt.xlabel('Model')
+    plt.savefig(f"{ptime[idx]}_compare.png")
+
 if __name__ == '__main__':
     basedir = './results'
 
@@ -76,12 +97,14 @@ if __name__ == '__main__':
             print('Start plotting...')
             break
 
-        filepath = f"{basedir}/{inp}/allTest_{dataset_opt}/threshold_allCase_testing_{level}.log"
+        filepath = glob.glob(f"{basedir}/{inp}/allTest_{dataset_opt}/*.log")[0]
 
         res.append(parse_score(filepath))
         title.append(title_opt)
         
-    plot_compare(res, title)
+    ptime = [750, 1500, 2000, 2500, 2750]
+    for p in range(len(ptime)):
+        plot_bar(res, title, p)
 
 
 

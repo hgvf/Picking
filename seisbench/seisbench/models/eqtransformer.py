@@ -5,7 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import warnings
-
+import sys
+sys.path.append('/home/weiwei/disk4/picking_baseline')
+from conformer import *
 
 # For implementation, potentially follow: https://medium.com/huggingface/from-tensorflow-to-pytorch-265f40ef2a28
 class EQTransformer(WaveformModel):
@@ -45,6 +47,7 @@ class EQTransformer(WaveformModel):
         drop_rate=0.1,
         original_compatible=False,
         sampling_rate=100,
+        isConformer=False,
         **kwargs,
     ):
         citation = (
@@ -72,6 +75,12 @@ class EQTransformer(WaveformModel):
         self.lstm_blocks = lstm_blocks
         self.drop_rate = drop_rate
 
+        # collect the modules name that should apply Xavier norm, and zero initialization
+        with open('./eqt/xavierNorm_layer.txt', 'r') as f:
+            xavierNorm = f.readlines()
+        with open('./eqt/zero_init_layer.txt', 'r') as f:
+            zero_init_layer = f.readlines()
+    
         # Add options for conservative and the true original - see https://github.com/seisbench/seisbench/issues/96#issuecomment-1155158224
         if original_compatible == True:
             warnings.warn(
@@ -134,13 +143,17 @@ class EQTransformer(WaveformModel):
             original_compatible=original_compatible,
         )
 
-        # Global attention - two transformers
-        self.transformer_d0 = Transformer(
-            input_size=16, drop_rate=self.drop_rate, eps=eps
-        )
-        self.transformer_d = Transformer(
-            input_size=16, drop_rate=self.drop_rate, eps=eps
-        )
+        self.isConformer = isConformer
+        if not isConformer:
+            # Global attention - two transformers
+            self.transformer_d0 = Transformer(
+                input_size=16, drop_rate=self.drop_rate, eps=eps
+            )
+            self.transformer_d = Transformer(
+                input_size=16, drop_rate=self.drop_rate, eps=eps
+            )
+        else:
+            self.conformer = Conformer(num_classes=16, input_dim=16, encoder_dim=128, num_attention_heads=1, num_encoder_layers=2, subsample=False)
 
         # Detection decoder and final Conv
         self.decoder_d = Decoder(
@@ -191,6 +204,8 @@ class EQTransformer(WaveformModel):
         self.pick_decoders = nn.ModuleList(self.pick_decoders)
         self.pick_convs = nn.ModuleList(self.pick_convs)
 
+        self._init_parameters(xavierNorm, zero_init_layer)
+
     def forward(self, x):
         assert x.ndim == 3
         assert x.shape[1:] == (self.in_channels, self.in_samples)
@@ -199,8 +214,13 @@ class EQTransformer(WaveformModel):
         x = self.encoder(x)
         x = self.res_cnn_stack(x)
         x = self.bi_lstm_stack(x)
-        x, _ = self.transformer_d0(x)
-        x, _ = self.transformer_d(x)
+
+        if not self.isConformer:
+            x, _ = self.transformer_d0(x)
+            x, _ = self.transformer_d(x)
+        else:
+            x, _ = self.conformer(x.permute(0, 2, 1), 47)
+            x = x.permute(0, 2, 1)
 
         # Detection part
         detection = self.decoder_d(x)
@@ -310,6 +330,13 @@ class EQTransformer(WaveformModel):
 
         return model_args
 
+    def _init_parameters(self, xavierNorm, zero_init_layer):
+        for name, param in self.state_dict().items():
+            if name+'\n' in xavierNorm:
+                nn.init.xavier_normal_(param.data)
+            if name+'\n' in zero_init_layer:
+                nn.init.zeros_(param.data)    
+            
 
 class Encoder(nn.Module):
     """

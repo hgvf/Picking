@@ -4,8 +4,9 @@ import seisbench.generate as sbg
 
 import numpy as np
 import sys
-sys.path.append('../RED-PAN')
+sys.path.append('./RED-PAN')
 from gen_tar import DWA
+from tso_REDPAN import *
 import torch
 import torch.nn.functional as F
 
@@ -164,27 +165,52 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0)
             ]
     elif opt.model_opt == 'eqt':
+        p_phases = 'trace_p_arrival_sample'
+        s_phases = 'trace_s_arrival_sample'
+        phase_dict = [p_phases, s_phases]
+
         if test:
-            augmentations = [
-                sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
-                sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
-                sbg.VtoA(),
-                sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass', keep_ori=True),
-                sbg.ChangeDtype(np.float32),
-                sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0, shape='triangle'),
-            ]
-            
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+            else:
+                augmentations = [
+                    sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
         else:
-            augmentations = [
-                sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
-                sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
-                sbg.VtoA(),
-                sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 45], btype='bandpass'),
-                sbg.ChangeDtype(np.float32),
-                sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0, shape='triangle'),
-            ]
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+            else:
+                augmentations = [
+                    sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
     elif opt.model_opt == 'conformer' or opt.model_opt == 'anticopy_conformer':
         if test:
             augmentations = [
@@ -348,19 +374,39 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
     elif opt.model_opt == 'GRADUATE':
+        p_phases = 'trace_p_arrival_sample'
+        s_phases = 'trace_s_arrival_sample'
+        
+        if opt.label_type == 'all':
+            phase_dict = [p_phases, s_phases]
+        else:
+            phase_dict = [p_phases]
+
         if test:
-            augmentations = [
-                sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
-                sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
-                sbg.VtoA(),
-                sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
-                sbg.STFT(),
-                sbg.CharStaLta(),
-                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
-                sbg.ChangeDtype(np.float32),
-                sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
-            ]
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                    sbg.STFT(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
+                ]
+            else:
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
+                    sbg.STFT(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
+                ]
         elif EEW:
             augmentations = [
                 sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=4000, selection="first", strategy="pad"),
@@ -374,25 +420,40 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.ChangeDtype(np.float32),
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),]
         else:
-            augmentations = [
-                sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
-                sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
-                sbg.VtoA(),
-                sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
-                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
-                sbg.STFT(),
-                sbg.CharStaLta(),
-                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
-                sbg.ChangeDtype(np.float32),
-                sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
+                    sbg.STFT(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
+            else:
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
+                    sbg.STFT(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
+                ]
+        
+        if opt.label_type == 'all':
+            augmentations.append(sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4))
     return augmentations
 
 def load_model(opt, device):
     assert opt.model_opt != None, "Choose one of the model in seisbench."
 
     if opt.model_opt == 'eqt':
-        model = sbm.EQTransformer(in_samples=3000, classes=1, phases='P')
+        model = sbm.EQTransformer(in_samples=3000, isConformer=opt.isConformer)
     elif opt.model_opt == 'basicphaseAE':
         model = sbm.BasicPhaseAE(classes=2, phases='NP')
     elif opt.model_opt == 'gpd':
@@ -424,23 +485,52 @@ def load_model(opt, device):
     elif opt.model_opt == 'anticopy_conformer':
         model = AntiCopy_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l)
     elif opt.model_opt == 'RED_PAN':
-        model = RED_PAN().double()
+        # model = RED_PAN().double()
         # model = RED_PAN()
+        model = mtan_R2unet().double()
     elif opt.model_opt == 'GRADUATE':
         rep_KV = True if opt.rep_KV == 'True' else False
         model = GRADUATE(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, 
                     encoder_type=opt.encoder_type, dec_layers=opt.dec_layers, norm_type=opt.MGAN_normtype, l=opt.MGAN_l, cross_attn_type=opt.cross_attn_type, 
-                    decoder_type=opt.decoder_type, output_layer_type=opt.output_layer_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type,
-                    label_type=opt.label_type, recover_type=opt.recover_type)
+                    decoder_type=opt.decoder_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type,
+                    label_type=opt.label_type, recover_type=opt.recover_type, res_dec=opt.res_dec)
     
     return model.to(device)
     # return BalancedDataParallel(20, model.to(device))
 
-def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=None):
+def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=None, eqt_regularization=None):
     if opt.model_opt == 'eqt':
-        weights = torch.add(torch.mul(gt[:, 0], opt.loss_weight), 1).to(device)
+        picking_gt, detection_gt = gt
+        loss_weight = [0.4, 0.55, 0.05]       # P, S, detection
+        reduction = 'sum'
+
+        # ground-truth -> 0: P-phase, 1: S-phase, 2: other label
+        # detection
+        # prediction -> 0: detection, 1: P-phase picking, 2: S-phase picking
+        loss = 0.0
+        for i in range(3):
+            if i == 0 or i == 1:
+                nonzero_idx = (picking_gt[:, i] != 0)
+                weights = torch.ones(picking_gt[:, i].shape)*0.11
+                weights[nonzero_idx] = 0.89
+
+                loss += loss_weight[i] * F.binary_cross_entropy(weight=weights.to(device), input=pred[i+1].to(device), target=picking_gt[:, i].type(torch.FloatTensor).to(device), reduction=reduction)
+            else:
+                nonzero_idx = (detection_gt[:, 0] != 0)
+                weights = torch.ones(detection_gt[:, 0].shape)*0.11
+                weights[nonzero_idx] = 0.89
+
+                loss += loss_weight[i] * F.binary_cross_entropy(weight=weights.to(device), input=pred[0].to(device), target=detection_gt[:, 0].type(torch.FloatTensor).to(device), reduction=reduction)
+
+        reg = 0.0
+        l1 = 1e-4
+        model, eqt_reg = eqt_regularization
+        for name, param in model.state_dict().items():
+            if name+'\n' in eqt_reg:
+                reg += torch.norm(param.data, 1)
         
-        loss = F.binary_cross_entropy(weight=weights, input=pred[1].to(device), target=gt[:, 0].type(torch.FloatTensor).to(device))
+        loss = loss + reg * l1
+        
     elif opt.model_opt == 'basicphaseAE':
         # vector cross entropy loss
         h = gt.to(device) * torch.log(pred.to(device) + 1e-5)
@@ -466,9 +556,9 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
             loss = F.binary_cross_entropy(weight=weights, input=pred[:, :, 0].to(device), target=gt[:, 0].type(torch.FloatTensor).to(device))
         elif opt.label_type == 'other':
             loss = 0.0
+            weights = torch.add(torch.mul(gt[:, 0], opt.loss_weight), 1).to(device)
             for i in range(2):
                 # 0: picking label, 1: noise label
-                weights = torch.add(torch.mul(gt[:, i], opt.loss_weight), 1).to(device)
                 loss += F.binary_cross_entropy(weight=weights, input=pred[:, :, i].to(device), target=gt[:, i].type(torch.FloatTensor).to(device))
 
     elif opt.model_opt == 'conformer_intensity':
@@ -568,28 +658,52 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
             # M_loss += F.binary_cross_entropy(input=pred_M[:, i], target=gt_M[:, i].to(device))
 
         loss = DWA(task1_loss, task2_loss, cur_epoch, PS_loss, M_loss)
-         
+
         return loss, PS_loss, M_loss
     elif opt.model_opt == 'GRADUATE':
         pred_seg, pred_picking = pred
-        gt_seg, gt_picking = gt
-        
-        # picking loss
-        if opt.label_type == 'p':
-            weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
-            picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking[:, :, 0].to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device))
-        elif opt.label_type == 'other':
-            picking_loss = 0.0
-            for i in range(2):
-                weights = torch.add(torch.mul(gt_picking[:, i], opt.loss_weight), 1).to(device)
-                picking_loss += F.binary_cross_entropy(weight=weights, input=pred_picking[:, :, i].squeeze().to(device), target=gt_picking[:, i].type(torch.FloatTensor).to(device))
+        reduction = 'sum'
 
+        # ======================== Picking ======================= #
+        if opt.label_type == 'p':
+            gt_seg, gt_picking = gt
+
+            weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
+            picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking[:, :, 0].to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device), reduction=reduction)
+        elif opt.label_type == 'other':
+            gt_seg, gt_picking = gt
+
+            picking_loss = 0.0
+            weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
+            for i in range(2):
+                picking_loss += F.binary_cross_entropy(weight=weights, input=pred_picking[:, :, i].squeeze().to(device), target=gt_picking[:, i].type(torch.FloatTensor).to(device), reduction=reduction)
+        elif opt.label_type == 'all':
+            pred_detection, pred_p, pred_s = pred_picking
+            
+            pred = [pred_p, pred_s]
+            gt_seg, gt_picking, gt_detection = gt
+            
+            loss_weight = [0.6, 0.35, 0.05]       # P, S, detection
+        
+            # ground-truth -> 0: P-phase, 1: S-phase, 2: other label
+            # detection
+            # prediction -> 0: detection, 1: P-phase picking, 2: S-phase picking
+            picking_loss = 0.0
+            for i in range(3):
+                if i == 0 or i == 1:
+                    weights = torch.add(torch.mul(gt_picking[:, i], opt.loss_weight), 1).to(device)
+                    picking_loss += loss_weight[i] * F.binary_cross_entropy(weight=weights.to(device), input=pred[i].squeeze().to(device), target=gt_picking[:, i].type(torch.FloatTensor).to(device), reduction=reduction)
+                else:
+                    weights = torch.add(torch.mul(gt_detection[:, 0], opt.loss_weight), 1).to(device)
+                    picking_loss += loss_weight[i] * F.binary_cross_entropy(weight=weights.to(device), input=pred_detection.squeeze().to(device), target=gt_detection[:, 0].type(torch.FloatTensor).to(device), reduction=reduction)
+
+        # ====================== Temporal segmentation ======================== #
         if opt.seg_proj_type != 'none':
             # temporal segmentation loss
             # prediction: (batch, wavelength, 1)
             # ground-truth: (batch, wavelength)
             weights = torch.add(torch.mul(gt_seg, opt.loss_weight), 1).to(device)
-            segmentation_loss = F.binary_cross_entropy(input=pred_seg[:, :, 0], target=gt_seg.type(torch.FloatTensor).to(device), weight=weights)
+            segmentation_loss = F.binary_cross_entropy(input=pred_seg[:, :, 0], target=gt_seg.type(torch.FloatTensor).to(device), weight=weights, reduction=reduction)
             # print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
 
             loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss

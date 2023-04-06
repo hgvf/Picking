@@ -78,6 +78,7 @@ def parse_args():
     parser.add_argument('--dataset_opt', type=str, default='taiwan')
     parser.add_argument('--loading_method', type=str, default='full')
     parser.add_argument('--normalize_opt', type=str, default='peak')
+    parser.add_argument('--isConformer', type=bool, default=False)
 
     # custom hyperparameters
     parser.add_argument('--conformer_class', type=int, default=16)
@@ -111,12 +112,12 @@ def parse_args():
     # GRADUATE model
     parser.add_argument('--cross_attn_type', type=int, default=2)
     parser.add_argument('--n_segmentation', type=int, default=5)
-    parser.add_argument('--output_layer_type', type=str, default='fc')
     parser.add_argument('--rep_KV', type=str, default='False')
     parser.add_argument('--segmentation_ratio', type=float, default=0.35)
     parser.add_argument('--seg_proj_type', type=str, default='crossattn')
     parser.add_argument('--recover_type', type=str, default='crossattn')
-    
+    parser.add_argument('--res_dec', type=bool, default=False)
+
     opt = parser.parse_args()
 
     return opt
@@ -161,6 +162,25 @@ def noam_optimizer(model, lr, warmup_step, device):
     optimizer = build_optim(o, model, False, device)
 
     return optimizer
+
+def eqt_init_lr(epoch, optimizer, scheduler):
+    lr = 1e-3
+    
+    change_init_lr = [21, 41, 61, 91]
+    if epoch in change_init_lr:
+        if epoch > 90:
+            lr *= 0.5e-3
+        elif epoch > 60:
+            lr *= 1e-3
+        elif epoch > 40:
+            lr *= 1e-2
+        elif epoch > 20:
+            lr *= 1e-1
+            
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=np.sqrt(0.1), cooldown=0, min_lr=0.5e-6, patience=3)
+        
+    return optimizer, scheduler
 
 def split_dataset(opt, return_dataset=False):
     # load datasets
@@ -337,7 +357,7 @@ def level_stage(prev_loss, cur_loss, prev_stage, schedule_cnt, patience):
     else:
         return prev_stage, schedule_cnt, False
 
-def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, output_dir, redpan_loss=None, Taiwan_aug=False):
+def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, output_dir, redpan_loss=None, Taiwan_aug=False, eqt_reg=None):
     model.train()
     train_loss = 0.0
     min_loss = 1000
@@ -404,14 +424,28 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
                     out, out_MT = model(data['X'].to(device))
                 elif opt.model_opt == 'GRADUATE':
                     out_seg, out = model(data['X'].to(device), stft=data['stft'].float().to(device))
-
                 else:
                     out = model(data['X'].to(device))
                 
+                # plt.subplot(311)
+                # plt.plot(data['X'][0, :3].T)
+                # plt.subplot(312)
+                # plt.plot(data['y'][0].T)
+                # plt.subplot(313)
+                # plt.plot(out[1][0].detach().cpu().numpy())
+                # plt.savefig(f"./tmp/{idx}.png")
+                # plt.clf()
+        
                 if opt.model_opt == 'conformer_intensity':
                     loss = loss_fn(opt, out, data['y'], device, intensity=(out_MT, data['intensity']))
                 elif opt.model_opt == 'GRADUATE':
-                    loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
+                    if opt.label_type == 'p' or opt.label_type == 'other':
+                        loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
+                    elif opt.label_type == 'all':
+                        loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
+
+                elif opt.model_opt == 'eqt':
+                    loss = loss_fn(opt, out, (data['y'], data['detections']), device, eqt_regularization=(model, eqt_reg))
                 else:
                     loss = loss_fn(opt, out, data['y'], device)
     
@@ -424,7 +458,9 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
             optimizer.step()
             
             model.zero_grad()
-            # optimizer.zero_grad()
+
+            if not opt.noam:
+                optimizer.zero_grad()
         
         train_loss = train_loss + loss.detach().cpu().item()*opt.gradient_accumulation
         train_loop.set_description(f"[Train Epoch {cur_epoch+1}/{opt.epochs}]")
@@ -437,7 +473,7 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
     else:
         return train_loss
 
-def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_aug=False):
+def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_aug=False, eqt_reg=None):
     model.eval()
     dev_loss = 0.0
     task1_loss, task2_loss = 0.0, 0.0
@@ -500,12 +536,17 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
                     if opt.model_opt == 'conformer_intensity':
                         loss = loss_fn(opt, out, data['y'], device, intensity=(out_MT, data['intensity']))
                     elif opt.model_opt == 'GRADUATE':
-                        loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
+                        if opt.label_type == 'p' or opt.label_type == 'other':
+                            loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
+                        elif opt.label_type == 'all':
+                            loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
+                    elif opt.model_opt == 'eqt':
+                        loss = loss_fn(opt, out, (data['y'], data['detections']), device, eqt_regularization=(model, eqt_reg))
                     else:
                         loss = loss_fn(opt, out, data['y'], device)
             
         dev_loss = dev_loss + loss.detach().cpu().item()
-
+        
         valid_loop.set_description(f"[Valid Epoch {cur_epoch+1}/{opt.epochs}]")
         valid_loop.set_postfix(loss=loss.detach().cpu().item())
         
@@ -542,6 +583,11 @@ if __name__ == '__main__':
 
     model = load_model(opt, device)
     
+    # collect the module's name to regularization, only for Eqt
+    if opt.model_opt == 'eqt':
+        with open('./eqt/regularization_layer.txt', 'r') as f:
+            eqt_reg = f.readlines()
+
     if opt.load_pretrained:
         model_dir = os.path.join('./results', opt.pretrained_path)
         model_path = os.path.join(model_dir, 'model.pt')
@@ -555,6 +601,9 @@ if __name__ == '__main__':
     print('loading optimizer & scheduler...')
     if opt.noam:
         optimizer = noam_optimizer(model, opt.lr, opt.warmup_step, device)
+    elif opt.model_opt == 'eqt':
+        optimizer = optim.Adam(model.parameters(), lr=1e-3)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=np.sqrt(0.1), cooldown=0, min_lr=0.5e-6, patience=opt.patience-2)
     else:
         optimizer = optim.Adam(model.parameters(), opt.lr)
 
@@ -625,8 +674,7 @@ if __name__ == '__main__':
     for epoch in range(init_epoch, opt.epochs):
 
         # Taiwan augmentation
-        if (early_stop_cnt >= 3 or opt.special_aug) and not isTaiwanAug: 
-            isTaiwanAug = True
+        if (early_stop_cnt >= 4 or opt.special_aug) and not isTaiwanAug and (opt.model_opt == 'GRADUATE' or opt.model_opt == 'conformer'): 
             early_stop_cnt -= 1
             train_set, dev_set = split_dataset(opt, return_dataset=False)
     
@@ -639,9 +687,11 @@ if __name__ == '__main__':
             dev_loader = DataLoader(dev_generator, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
 
             # keep the original model checkpoint
-            if epoch > 3:
+            if not isTaiwanAug and epoch != 0:
                 ori = os.path.join(output_dir, 'model.pt')
                 os.rename(ori, os.path.join(output_dir, 'beforeTaiwanAug.pt'))
+            
+            isTaiwanAug = True
 
         # SNR schedule learning
         if opt.snr_schedule or opt.level_schedule:
@@ -666,6 +716,13 @@ if __name__ == '__main__':
         if opt.model_opt == 'RED_PAN':
             train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, redpan_loss=(PS_loss, M_loss))
             valid_loss = valid(model, dev_loader, device, epoch, opt, redpan_loss=(PS_loss, M_loss))
+        elif opt.model_opt == 'eqt':
+            optimizer, scheduler = eqt_init_lr(epoch, optimizer, scheduler)
+
+            train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, Taiwan_aug=isTaiwanAug, eqt_reg=eqt_reg)
+            valid_loss = valid(model, dev_loader, device, epoch, opt, Taiwan_aug=isTaiwanAug, eqt_reg=eqt_reg)
+        
+            scheduler.step(valid_loss)
         else:
             train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, Taiwan_aug=isTaiwanAug)
             valid_loss = valid(model, dev_loader, device, epoch, opt, Taiwan_aug=isTaiwanAug)
@@ -694,6 +751,9 @@ if __name__ == '__main__':
         if opt.noam:
             print('Learning rate: %.10f' %(optimizer.learning_rate))
             logging.info('Learning rate: %.10f' %(optimizer.learning_rate))
+        else:
+            print('Learning rate: %.10f' %(optimizer.param_groups[0]['lr']))
+            logging.info('Learning rate: %.10f' %(optimizer.param_groups[0]['lr']))
         logging.info('======================================================')
 
         # Line notify

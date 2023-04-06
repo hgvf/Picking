@@ -247,7 +247,7 @@ class Emb(nn.Module):
         return emb
 
 class Residual_Unet(nn.Module):
-    def __init__(self, conformer_class, nhead, d_ffn ,dec_layers):
+    def __init__(self, conformer_class, nhead, d_ffn ,dec_layers, res_dec):
         super(Residual_Unet, self).__init__()
         
         self.conv1 = nn.Sequential(nn.Conv1d(conformer_class, conformer_class*3, kernel_size=3, stride=2),
@@ -262,9 +262,17 @@ class Residual_Unet(nn.Module):
                                        nn.BatchNorm1d(conformer_class*8),
                                        nn.ReLU(),)
         
-        self.bottleneck_layer = nn.TransformerEncoderLayer(d_model=conformer_class*8, nhead=nhead, dim_feedforward=d_ffn)
-        self.bottleneck = nn.TransformerEncoder(self.bottleneck_layer, num_layers=dec_layers)
-        
+        self.res_dec = res_dec
+        if res_dec:
+            self.dec_layers = dec_layers
+            self.bottleneck = nn.ModuleList([])
+            for _ in range(dec_layers):
+                bottleneck_layer = nn.TransformerEncoderLayer(d_model=conformer_class*8, nhead=nhead, dim_feedforward=d_ffn)
+                self.bottleneck.append(nn.TransformerEncoder(bottleneck_layer, num_layers=1))
+        else:
+            self.bottleneck_layer = nn.TransformerEncoderLayer(d_model=conformer_class*8, nhead=nhead, dim_feedforward=d_ffn)
+            self.bottleneck = nn.TransformerEncoder(self.bottleneck_layer, num_layers=dec_layers)
+
         self.up1 = nn.Sequential(nn.ConvTranspose1d(conformer_class*8, conformer_class*5, kernel_size=5, stride=3),
                                        nn.BatchNorm1d(conformer_class*5),
                                        nn.ReLU(),)
@@ -296,10 +304,17 @@ class Residual_Unet(nn.Module):
         
         conv3_out = self.conv3(conv2_out)
         # print('conv3: ', conv3_out.shape)
-        
-        bottleneck_out = self.bottleneck(conv3_out.permute(0,2,1)).permute(0,2,1)
-        # print("bottleneck: ", bottleneck_out.shape)
-        
+    
+        if not self.res_dec:
+            bottleneck_out = self.bottleneck(conv3_out.permute(0,2,1)).permute(0,2,1)
+        else:
+            for i, layer in enumerate(self.bottleneck):
+                if i == 0:
+                    bottleneck_out = layer(conv3_out.permute(0,2,1))
+                else:
+                    bottleneck_out = bottleneck_out + layer(bottleneck_out)
+            bottleneck_out = bottleneck_out.permute(0,2,1)
+
         up1_out = self.up1(bottleneck_out)
         # print("up1: ", up1_out.shape)
         
@@ -885,8 +900,8 @@ class AntiCopy_Conformer(nn.Module):
 
 class GRADUATE(nn.Module):
     def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, 
-                 cross_attn_type, seg_proj_type='crossattn', encoder_type='conformer', decoder_type='crossattn', output_layer_type='fc', 
-                 rep_KV=True, label_type='p', recover_type="crossattn"):
+                 cross_attn_type, seg_proj_type='crossattn', encoder_type='conformer', decoder_type='crossattn', 
+                 rep_KV=True, label_type='p', recover_type="crossattn", res_dec=False):
         super(GRADUATE, self).__init__()
         
         dim_stft = 32
@@ -912,7 +927,7 @@ class GRADUATE(nn.Module):
                                            nn.ReLU(),)
             self.conformer = Conformer(subsample=False, num_classes=conformer_class, input_dim=d_model*8, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
         else:
-            self.conformer = Conformer(num_classes=conformer_class, input_dim=input_dim, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+            self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
         
         if seg_proj_type == 'crossattn':
             self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
@@ -1065,30 +1080,22 @@ class GRADUATE(nn.Module):
                                       nn.Dropout(0.1),)
             
         elif decoder_type == 'residual_unet':
-            self.decoder = Residual_Unet(conformer_class, nhead, d_ffn, dec_layers)
+            self.decoder = Residual_Unet(conformer_class, nhead, d_ffn, dec_layers, res_dec)
 
         # =========================================== #
         #                    Output                   #
         # =========================================== #
-        self.output_layer_type = output_layer_type
+        self.label_type = label_type
         
-        if output_layer_type == 'fc':
-            self.output = nn.Linear(conformer_class, 1)
-        elif output_layer_type == 'conv':
-            self.output = nn.Conv1d(conformer_class, 1, kernel_size=5, padding='same')
-            
         if label_type == 'p':
-            if output_layer_type == 'fc':
-                self.output = nn.Linear(conformer_class, 1)
-            elif output_layer_type == 'conv':
-                self.output = nn.Conv1d(conformer_class, 1, kernel_size=5, padding='same')
+            self.output = nn.Linear(conformer_class, 1)
             self.output_actfn = nn.Sigmoid()
         elif label_type == 'other':
-            if output_layer_type == 'fc':
-                self.output = nn.Linear(conformer_class, 2)
-            elif output_layer_type == 'conv':
-                self.output = nn.Conv1d(conformer_class, 2, kernel_size=5, padding='same')
+            self.output = nn.Linear(conformer_class, 2)
             self.output_actfn = nn.Softmax(dim=-1)
+        elif label_type == 'all':
+            self.output = nn.ModuleList([nn.Linear(conformer_class, 1) for _ in range(3)])
+            self.output_actfn = nn.Sigmoid()
         
     def forward(self, wave, stft):
         # wave: (batch, 3000, 12)
@@ -1161,11 +1168,14 @@ class GRADUATE(nn.Module):
             dec_out = self.stft_rep(stft_out, dec_out, dec_out)
             
         # output layer
-        if self.output_layer_type == 'fc':
+        if self.label_type == 'p' or self.label_type == 'other':
             out = self.output_actfn(self.output(dec_out))
-        elif self.output_layer_type == 'conv':
-            out = self.output_actfn(self.output(dec_out.permute(0,2,1)).permute(0,2,1))
-            
+        elif self.label_type == 'all':
+            out = []
+            # 0: detection, 1: P-pahse, 2: S-phase
+            for layer in self.output:
+                out.append(self.output_actfn(layer(dec_out)))
+        
         return seg_out, out
 
         
