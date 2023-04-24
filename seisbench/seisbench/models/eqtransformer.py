@@ -48,6 +48,10 @@ class EQTransformer(WaveformModel):
         original_compatible=False,
         sampling_rate=100,
         isConformer=False,
+        conformer_class=8, 
+        conformer_d_ffn=64, 
+        conformer_nhead=1,
+        conformer_layers=2,
         **kwargs,
     ):
         citation = (
@@ -76,11 +80,15 @@ class EQTransformer(WaveformModel):
         self.drop_rate = drop_rate
 
         # collect the modules name that should apply Xavier norm, and zero initialization
-        with open('./eqt/xavierNorm_layer.txt', 'r') as f:
-            xavierNorm = f.readlines()
-        with open('./eqt/zero_init_layer.txt', 'r') as f:
-            zero_init_layer = f.readlines()
-    
+        xavierNorm, zero_init_layer = [], []
+        try:
+            with open('./eqt/xavierNorm_layer.txt', 'r') as f:
+                xavierNorm = f.readlines()
+            with open('./eqt/zero_init_layer.txt', 'r') as f:
+                zero_init_layer = f.readlines()
+        except:
+            pass
+        
         # Add options for conservative and the true original - see https://github.com/seisbench/seisbench/issues/96#issuecomment-1155158224
         if original_compatible == True:
             warnings.warn(
@@ -153,7 +161,7 @@ class EQTransformer(WaveformModel):
                 input_size=16, drop_rate=self.drop_rate, eps=eps
             )
         else:
-            self.conformer = Conformer(num_classes=16, input_dim=16, encoder_dim=128, num_attention_heads=1, num_encoder_layers=2, subsample=False)
+            self.conformer = Conformer(num_classes=conformer_class, input_dim=16, encoder_dim=conformer_d_ffn, num_attention_heads=conformer_nhead, num_encoder_layers=conformer_layers, subsample=False)
 
         # Detection decoder and final Conv
         self.decoder_d = Decoder(

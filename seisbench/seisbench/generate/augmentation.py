@@ -178,7 +178,7 @@ class Filter:
     """
 
     def __init__(
-        self, N, Wn, btype="low", analog=False, forward_backward=False, axis=-1, key="X", keep_ori=False
+        self, N, Wn, btype="low", analog=False, forward_backward=False, axis=-1, key="X", keep_ori=False,
     ):
         self.forward_backward = forward_backward
         self.axis = axis
@@ -212,6 +212,12 @@ class Filter:
             x = scipy.signal.sosfiltfilt(sos, x, axis=self.axis).copy()
         else:
             x = scipy.signal.sosfilt(sos, x, axis=self.axis)
+
+        if 'ori_X' in state_dict and not self.keep_ori:
+            ori_x, ori_metadata = state_dict['ori_X']
+            ori_x = scipy.signal.sosfilt(sos, ori_x, axis=self.axis)
+
+            state_dict['ori_X'] = (ori_x, ori_metadata)
 
         state_dict[self.key[1]] = (x, metadata)
 
@@ -759,7 +765,7 @@ class CharStaLta:
     計算 Z, N, E 三軸各自的 characteristic, sta, lta features (3-dim -> 12-dim)
     """
 
-    def __init__(self, key="X", keep_ori=False):
+    def __init__(self, key="X", keep_ori=False, train=False):
         if isinstance(key, str):
             self.key = (key, key)
         else:
@@ -771,22 +777,32 @@ class CharStaLta:
         self.small_float = 1.0e-10
         self.STA_W = 0.6
         self.LTA_W = 0.015
+        self.train = train
 
     def __call__(self, state_dict):
         # waveforms: (3, 3000)
         waveforms, metadata = state_dict[self.key[0]]
+
+        if 'ori_X' in state_dict and self.train:
+            ori_waveforms, ori_metadata = state_dict['ori_X']
         
         if self.keep_ori:
-            if 'ori_X' not in state_dict.keys():
-                state_dict['ori_X'] = (waveforms, metadata)
+            state_dict['ori_X'] = (waveforms, metadata)
 
         # filter
         result = np.empty((waveforms.shape))
         data = np.zeros(3)
 
+        if 'ori_X' in state_dict and self.train:
+            ori_result = np.empty((waveforms.shape))
+            ori_data = np.zeros(3)
+
         for i in range(waveforms.shape[1]):
             if i == 0:
                 data = data * self.rawDataFilt + waveforms[:, i] + self.small_float
+
+                if 'ori_X' in state_dict and self.train:
+                    ori_data = ori_data * self.rawDataFilt + ori_waveforms[:, i] + self.small_float
             else:
                 data = (
                     data * self.rawDataFilt
@@ -794,29 +810,63 @@ class CharStaLta:
                     + self.small_float
                 )
 
+                if 'ori_X' in state_dict and self.train:
+                    ori_data = (
+                    ori_data * self.rawDataFilt
+                    + (ori_waveforms[:, i] - waveforms[:, i - 1])
+                    + self.small_float
+                )
+
             result[:, i] = data
 
+            if 'ori_X' in state_dict and self.train:
+                ori_result[:, i] = ori_data
+
         wave_square = np.square(result)
+
+        if 'ori_X' in state_dict and self.train:
+            ori_wave_square = np.square(ori_result)
 
         # characteristic_diff
         diff = np.empty((result.shape))
 
+        if 'ori_X' in state_dict and self.train:
+            ori_diff = np.empty((ori_result.shape))
+
         for i in range(result.shape[1]):
             if i == 0:
                 diff[:, i] = result[:, 0]
+
+                if 'ori_X' in state_dict and self.train:
+                    ori_diff[:, i] = ori_result[:, 0]
             else:
                 diff[:, i] = result[:, i] - result[:, i - 1]
 
+                if 'ori_X' in state_dict and self.train:
+                    ori_diff[:, i] = ori_result[:, i] - ori_result[:, i - 1]
+
         diff_square = np.square(diff)
+
+        if 'ori_X' in state_dict and self.train:
+            ori_diff_square = np.square(ori_diff)
 
         # characteristic's output vector
         wave_characteristic = np.add(
             wave_square, np.multiply(diff_square, self.CharFuncFilt)
         )
 
+        if 'ori_X' in state_dict and self.train:
+            ori_wave_characteristic = np.add(
+                ori_wave_square, np.multiply(ori_diff_square, self.CharFuncFilt)
+            )
+
         # sta
         sta = np.zeros(3)
         wave_sta = np.empty((waveforms.shape))
+
+        if 'ori_X' in state_dict and self.train:
+            ori_sta = np.zeros(3)
+            ori_wave_sta = np.empty((ori_waveforms.shape))
 
         # Compute esta, the short-term average of edat
         for i in range(waveforms.shape[1]):
@@ -825,9 +875,17 @@ class CharStaLta:
             # sta's output vector
             wave_sta[:, i] = sta
 
+            if 'ori_X' in state_dict and self.train:
+                ori_sta += self.STA_W * (ori_waveforms[:, i] - ori_sta)
+                ori_wave_sta[:, i] = ori_sta
+
         # lta
         lta = np.zeros(3)
         wave_lta = np.empty((waveforms.shape))
+
+        if 'ori_X' in state_dict and self.train:
+            ori_lta = np.zeros(3)
+            ori_wave_lta = np.empty((ori_waveforms.shape))
 
         # Compute esta, the short-term average of edat
         for i in range(waveforms.shape[1]):
@@ -836,12 +894,24 @@ class CharStaLta:
             # lta's output vector
             wave_lta[:, i] = lta
 
+            if 'ori_X' in state_dict and self.train:
+                ori_lta += self.LTA_W * (ori_waveforms[:, i] - ori_lta)
+                ori_wave_lta[:, i] = ori_lta
+
         # concatenate 12-dim vector as output
         waveforms = np.concatenate(
             (waveforms, wave_characteristic, wave_sta, wave_lta), axis=0
         )
+
+        if 'ori_X' in state_dict and self.train:
+            ori_waveforms = np.concatenate(
+                (ori_waveforms, ori_wave_characteristic, ori_wave_sta, ori_wave_lta), axis=0
+            )
         
         state_dict[self.key[1]] = (waveforms, metadata)
+
+        if 'ori_X' in state_dict and self.train:
+            state_dict['ori_X'] = (ori_waveforms, ori_metadata)
 
 class STFT:
     def __init__(self, axis=-1, key="X", imag=False, dim_spectrogram='1D'):
@@ -1004,3 +1074,55 @@ class TemporalSegmentation:
         
         state_dict[self.key[1]] = (waveforms, metadata)
         state_dict['seg'] = gt
+
+class Magnitude:
+    def __init__(self, key='X', p_arrival_sample='trace_p_arrival_sample', s_arrival_sample='trace_s_arrival_sample'):
+        if isinstance(key, str):
+            self.key = (key, key)
+        else:
+            self.key = key
+
+        self.p_arrival_sample = p_arrival_sample
+        self.s_arrival_sample = s_arrival_sample
+
+    def __call__(self, state_dict):
+        waveforms, metadata = state_dict[self.key[0]]
+
+        mag = metadata['source_magnitude']
+
+        label = metadata[self.p_arrival_sample]
+        s_label = metadata[self.s_arrival_sample]
+        mag_gt = np.zeros(waveforms.shape[1])
+        if not np.isnan(label): 
+            mag_gt[int(label):] = mag
+        
+        if not np.isnan(s_label):
+            mag_gt[int(s_label)+500:] = 0
+
+        state_dict[self.key[1]] = (waveforms, metadata)
+        state_dict['mag'] = np.expand_dims(mag_gt, axis=0)
+
+        distance = np.zeros((1, 1))
+        distance[0, 0] = metadata['path_ep_distance_km']
+        state_dict['dis'] = distance
+
+class FFT:
+    def __init__(self, key='X'):
+        if isinstance(key, str):
+            self.key = (key, key)
+        else:
+            self.key = key
+
+    def __call__(self, state_dict):
+        waveforms, metadata = state_dict[self.key[0]]
+
+        fft_out = scipy.fft.fft(waveforms[0])
+
+        fft_out = np.expand_dims(fft_out[:fft_out.shape[0]//2], axis=0)
+        fft_out = np.expand_dims(fft_out, axis=0)
+
+        # fft_out: (1, 1, 1500)
+
+        state_dict[self.key[1]] = (waveforms, metadata)
+        state_dict['fft'] = fft_out
+

@@ -56,15 +56,15 @@ def gen_target(ptime=None, stime=None, p_win=40, s_win=60, length=3000):
 
 def DWA(task1_loss, task2_loss, cur_epoch, cur_PS_loss, cur_M_loss):
     H = torch.FloatTensor([2])
-    K = torch.FloatTensor([0.5, 0.5])
-    # K = torch.FloatTensor([2, 2])
+    K = torch.FloatTensor([2, 2])
     
     # cur_epoch 從 0 開始
     if cur_epoch <= 1:
         w1, w2 = 1, 1
     else:
-        w1 = task1_loss[cur_epoch-1] / task1_loss[cur_epoch-2]
-        w2 = task2_loss[cur_epoch-1] / task2_loss[cur_epoch-2]
+        w1 = task1_loss[cur_epoch-1] / task1_loss[cur_epoch-2]      # w_pick
+        w2 = task2_loss[cur_epoch-1] / task2_loss[cur_epoch-2]      # w_mask
+
     w = torch.FloatTensor([w1, w2])
     w = torch.exp(w/H)
     

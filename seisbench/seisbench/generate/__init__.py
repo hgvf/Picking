@@ -19,6 +19,8 @@ from .augmentation import (
     MaskafterP,
     Intensity,
     TemporalSegmentation,
+    Magnitude,
+    FFT,
 )
 from .labeling import (
     SupervisedLabeller,

@@ -15,14 +15,14 @@ sys.path.append('/mnt/disk4/weiwei/RED-PAN/')
 from gen_tar import *
 
 class REDPAN_dataset(Dataset):
-    def __init__(self, basedir, option, samp_ratio, model_opt):
+    def __init__(self, basedir, option, samp_ratio, model_opt, load_to_ram=False):
         '''
         basedir: /mnt/disk4/weiwei/seismic_datasets/REDPAN_30S_pt/
         option: train or val
         samp_ratio: 要 sample 所有資料的多少百分比
         '''
         subpath = ['TW_EQ', 'TW_noise', 'STEAD']
-
+    
         # get the file list
         seis_list = []
         if os.path.exists(os.path.join(os.path.join(basedir, subpath[0]), option)):
@@ -62,8 +62,27 @@ class REDPAN_dataset(Dataset):
             else:
                 with open(os.path.join(basedir, subpath[2]+'/'+option+'.txt'), 'r') as f:
                     stead_list = f.readlines()
-        
+       
         self.datalist = seis_list + noise_list + stead_list
+
+        # preload to RAM
+        self.load_to_ram = load_to_ram
+        if load_to_ram:
+            print('load to RAM...')
+            self.trc_data, self.psn, self.mask = [], [], []
+            cnt = 0
+            n_sample = len(self.datalist) * samp_ratio
+            for f in tqdm(self.datalist, total=len(self.datalist)):
+                data = torch.load(f.strip())
+                trc_data, psn, mask = data['trc_data'], data['psn'], data['mask']
+
+                self.trc_data.append(trc_data)
+                self.psn.append(psn)
+                self.mask.append(mask)
+                cnt += 1
+                if cnt >= n_sample:
+                    break
+
         if samp_ratio < 1:
             self.idx = random.sample(range(len(self.datalist)), k=int(samp_ratio*len(self.datalist)))
         else:
@@ -85,15 +104,18 @@ class REDPAN_dataset(Dataset):
         3) Characteristic, STA, LTA (if needed)
         '''
 
-        # load data from disk
-        data = torch.load(self.datalist[self.idx[index]].strip())
-        trc_data, psn, mask = data['trc_data'], data['psn'], data['mask']
-
+        if self.load_to_ram:
+            trc_data, psn, mask = self.trc_data[self.idx[index]], self.psn[self.idx[index]], self.mask[self.idx[index]]
+        else:
+            # load data from disk
+            data = torch.load(self.datalist[self.idx[index]].strip())
+            trc_data, psn, mask = data['trc_data'], data['psn'], data['mask']
+            
         # zscore
-        trc_data = self._zscore(trc_data)
+        # trc_data = self._zscore(trc_data)
 
         # filter
-        trc_data = self._filter(trc_data)
+        # trc_data = self._filter(trc_data)
 
         # Characteristic, STA, LTA
         if self.model_opt == 'conformer' or self.model_opt == 'GRADUATE':
@@ -109,8 +131,7 @@ class REDPAN_dataset(Dataset):
         if self.model_opt == 'GRADUATE':
             return (trc_data, psn, mask, stft, seg)
         else:
-            return (trc_data, psn, mask)
-
+            return (torch.FloatTensor(trc_data), torch.FloatTensor(psn), torch.FloatTensor(mask))
 
     def __len__(self):
         return self.len

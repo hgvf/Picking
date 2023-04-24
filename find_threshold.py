@@ -28,7 +28,7 @@ from torch.utils.data import DataLoader
 import seisbench.data as sbd
 import seisbench.generate as sbg
 
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 
 def parse_args():
@@ -55,7 +55,9 @@ def parse_args():
     parser.add_argument('--s_wave', type=bool, default=False)
     parser.add_argument('--instrument', type=str, default='all')
     parser.add_argument('--EEW', type=bool, default=False)
-
+    parser.add_argument('--noise_sample', type=int, default=-1)
+    
+    parser.add_argument('--EEW_allTest', type=bool, default=False)
     parser.add_argument("--device", type=str, default='cpu')
     parser.add_argument("--batch_size", type=int, default=100)
 
@@ -385,6 +387,7 @@ def inference(opt, model, test_loader, device):
     gt = []
     snr_total = []
     intensity_total = []
+    mag, dis = [], []
     isREDPAN = True if opt.model_opt == 'RED_PAN' else False
 
     model.eval()
@@ -394,13 +397,6 @@ def inference(opt, model, test_loader, device):
             if not opt.dataset_opt == 'REDPAN_dataset':
                 snr_total += calc_snr(data, isREDPAN)
                 intensity_total += calc_inten(data, isREDPAN)
-
-            # plt.subplot(211)
-            # plt.plot(data['X'][0, :3].T)
-            # plt.subplot(212)
-            # plt.plot(data['y'][0].T)
-            # plt.savefig(f"./tmp/{idx}.png")
-            # plt.clf()
 
             with torch.no_grad():
                 if opt.dataset_opt == 'REDPAN_dataset':
@@ -443,7 +439,6 @@ def inference(opt, model, test_loader, device):
 
                         pred += [out_PS[i, 0].detach().squeeze().cpu().numpy() for i in range(out_PS.shape[0])]
                         gt += [target[i] for i in range(target.shape[0])]
-                
                     else:
                         if opt.model_opt == 'conformer_intensity':
                             out, out_MT = model(data['X'].to(device))
@@ -451,6 +446,10 @@ def inference(opt, model, test_loader, device):
                             out = model(data['X'].to(device), stft=data['stft'].to(device).float())
                         elif opt.model_opt == 'GRADUATE':
                             _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        elif opt.model_opt == 'tsfc':
+                            _, out_mag, out = model(data['X'][:, :3].to(device), stft=data['stft'].float().to(device))
+                        elif opt.model_opt == 'real_GRADUATE':
+                            _, out_mag, out = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
                         else:
                             out = model(data['X'].to(device))
 
@@ -458,18 +457,42 @@ def inference(opt, model, test_loader, device):
                             out = out[1].detach().squeeze().cpu().numpy()
                         elif opt.model_opt == 'phaseNet':
                             out = out[:, 0].detach().squeeze().cpu().numpy()
+                        elif opt.model_opt == 'tsfc':
+                            out = out[1].detach().squeeze().cpu().numpy()
+
+                            gt_mag = torch.max(data['mag'], dim=1).values
+                            for i in range(out_mag.shape[0]):
+                                mag.append((gt_mag[i], out_mag[i, 0, 0]))
+                                dis.append(data['dis'][i])
+                        elif opt.model_opt == 'real_GRADUATE':
+                            out = out[:, :, 1].detach().squeeze().cpu().numpy()
+
+                            gt_mag = torch.max(data['mag'], dim=1).values
+                            for i in range(out_mag.shape[0]):
+                                mag.append((gt_mag[i], out_mag[i, 0, 0]))
+                                dis.append(data['dis'][i].item())
                         else:
                             if opt.label_type == 'p':
                                 out = out.detach().squeeze().cpu().numpy()
                             elif opt.label_type == 'other':
                                 out = out[:, :, 0].detach().squeeze().cpu().numpy()                
 
+                        
+                        # plt.subplot(311)
+                        # plt.plot(data['X'][0, :3].T)
+                        # plt.subplot(312)
+                        # plt.plot(data['y'][0].T)
+                        # plt.subplot(313)
+                        # plt.plot(out[0])
+                        # plt.savefig(f"./tmp/{idx}.png")
+                        # plt.clf()
+
                         target = data['y'][:, 0].squeeze().numpy()
 
                         pred += [out[i] for i in range(out.shape[0])]
                         gt += [target[i] for i in range(target.shape[0])]
             
-    return pred, gt, snr_total, intensity_total
+    return pred, gt, snr_total, intensity_total, mag, dis
 
 def score(pred, gt, snr_total, intensity_total, mode, opt, threshold_prob, threshold_trigger, isTest=False):
     # 依照 snr 不同分別計算數據，先將原本的 snr level 轉換成對應 index
@@ -511,6 +534,34 @@ def score(pred, gt, snr_total, intensity_total, mode, opt, threshold_prob, thres
         toLine(opt.save_path, precision, recall, fscore, np.mean(diff)/100, np.std(diff)/100)
 
     return fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat
+
+def mag_score(mag, dis):
+    abs_diff, diff = 0.0, 0.0
+    distance_level = [20, 50, 80, 100, 150, 200]
+
+    pred, gt = [], []
+    dis_mag_stat = {}
+    for i in range(len(distance_level)):
+        dis_mag_stat[i] = []
+
+    print('Calculating mag score...')
+    for i in tqdm(range(len(mag)), total=len(mag)):
+        dis_idx = bisect.bisect_right(distance_level, dis[i])-1
+        if dis_idx < 0:
+            dis_idx = 0
+
+        # prediction - ground_truth
+        mag_diff = mag[i][1] - mag[i][0]
+
+        abs_diff += abs(mag_diff)
+        diff += mag_diff
+
+        dis_mag_stat[dis_idx].append(mag_diff.item())
+
+        pred.append(mag[i][1])
+        gt.append(mag[i][0])
+    
+    return abs_diff / len(mag), diff / len(mag), pred, gt, dis_mag_stat
 
 if __name__ == '__main__':
     torch.multiprocessing.set_sharing_strategy('file_system')
@@ -613,7 +664,16 @@ if __name__ == '__main__':
     if not opt.do_test and not opt.allTest:
         # find the best criteria
         print('finding best criteria...')
-        pred, gt, snr_total, intensity_total = inference(opt, model, dev_loader, device)
+        pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, dev_loader, device)
+
+        mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+
+        with open(os.path.join(output_dir, 'mag_pred.pkl'), 'wb') as f:
+            pickle.dump(mag_pred, f)
+        with open(os.path.join(output_dir, 'mag_gt.pkl'), 'wb') as f:
+            pickle.dump(mag_gt, f)
+        with open(os.path.join(output_dir, 'dismag.json'), 'w') as f:
+            json.dump(dis_mag, f)
 
         best_fscore = 0.0
         best_mode = ""
@@ -668,17 +728,29 @@ if __name__ == '__main__':
         logging.info('======================================================')
         logging.info("Best: ")
         logging.info(f"mode: {best_mode}, prob: {best_prob}, trigger: {best_trigger}, fscore: {best_fscore}")
+        logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
         logging.info('======================================================')
 
     if opt.do_test or opt.dataset_opt == 'stead' or opt.dataset_opt == 'REDPAN_dataset':
-        best_mode = opt.threshold_type
-        best_prob = opt.threshold_prob_start
-        best_trigger = opt.threshold_trigger_start
+        if opt.do_test:
+            best_mode = opt.threshold_type
+            best_prob = opt.threshold_prob_start
+            best_trigger = opt.threshold_trigger_start
 
         logging.info('Inference on testing set')
-        pred, gt, snr_total, intensity_total = inference(opt, model, test_loader, device)
+        pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, test_loader, device)
+        mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+
+        with open(os.path.join(output_dir, 'test_mag_pred.pkl'), 'wb') as f:
+            pickle.dump(mag_pred, f)
+        with open(os.path.join(output_dir, 'test_mag_gt.pkl'), 'wb') as f:
+            pickle.dump(mag_gt, f)
+        with open(os.path.join(output_dir, 'test_dismag.json'), 'w') as f:
+            json.dump(dis_mag, f)
+
         fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
         print('fscore: %.4f' %(fscore))
+        logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
 
         with open(os.path.join(output_dir, 'test_abs_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
             pickle.dump(abs_diff, f)
@@ -702,7 +774,10 @@ if __name__ == '__main__':
         logging.info('dataset: %s' %(opt.dataset_opt))
         
         print('Start testing...')
-        ptime_list = [750, 1500, 2000, 2500, 2750]
+        if opt.EEW_allTest:
+            ptime_list = [2500, 2750]
+        else:
+            ptime_list = [750, 1500, 2000, 2500, 2750]
         
         best_mode = opt.threshold_type
         best_prob = opt.threshold_prob_start
@@ -721,7 +796,9 @@ if __name__ == '__main__':
             # start predicting on test set
             logging.info('======================================================')
             logging.info('Inference on testing set, ptime: %d' %(ptime))
-            pred, gt, snr_total, intensity_total = inference(opt, model, test_loader, device)
+            pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, test_loader, device)
+            mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+
             fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
             print(f"ptime: {ptime}, fscore: {fscore}")
             logging.info('======================================================')
