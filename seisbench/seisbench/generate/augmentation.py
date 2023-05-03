@@ -52,6 +52,7 @@ class Normalize:
         eps=1e-10,
         key="X",
         keep_ori=False,
+        keep_mean_std=False,
     ):
         self.demean_axis = demean_axis
         self.detrend_axis = detrend_axis
@@ -59,6 +60,7 @@ class Normalize:
         self.amp_norm_type = amp_norm_type
         self.eps = eps
         self.keep_ori = keep_ori
+        self.keep_mean_std = keep_mean_std
 
         if isinstance(key, str):
             self.key = (key, key)
@@ -82,10 +84,15 @@ class Normalize:
         x = self._amp_norm(x)
 
         state_dict[self.key[1]] = (x, metadata)
+        if self.keep_mean_std:
+            state_dict['mean_std'] = np.concatenate((self.mean, self.std), axis=-1) 
 
     def _demean(self, x):
         if self.demean_axis is not None:
+            if self.keep_mean_std:
+                self.mean = np.mean(x, axis=self.demean_axis, keepdims=True).T
             x = x - np.mean(x, axis=self.demean_axis, keepdims=True)
+
         return x
 
     def _detrend(self, x):
@@ -100,6 +107,8 @@ class Normalize:
                     np.max(np.abs(x), axis=self.amp_norm_axis, keepdims=True) + self.eps
                 )
             elif self.amp_norm_type == "std":
+                if self.keep_mean_std:
+                    self.std = (np.std(x, axis=self.amp_norm_axis, keepdims=True) + self.eps).T
                 x = x / (np.std(x, axis=self.amp_norm_axis, keepdims=True) + self.eps)
 
             elif self.amp_norm_type == 'minmax':
@@ -1089,10 +1098,13 @@ class Magnitude:
         waveforms, metadata = state_dict[self.key[0]]
 
         mag = metadata['source_magnitude']
-
+        if np.isnan(mag):
+            mag = 0
+      
         label = metadata[self.p_arrival_sample]
         s_label = metadata[self.s_arrival_sample]
         mag_gt = np.zeros(waveforms.shape[1])
+        
         if not np.isnan(label): 
             mag_gt[int(label):] = mag
         
@@ -1103,7 +1115,14 @@ class Magnitude:
         state_dict['mag'] = np.expand_dims(mag_gt, axis=0)
 
         distance = np.zeros((1, 1))
-        distance[0, 0] = metadata['path_ep_distance_km']
+        if 'path_ep_distance_km' in metadata:
+            distance[0, 0] = metadata['path_ep_distance_km']
+        else:
+            dis = metadata['source_distance_km']
+            if np.isnan(dis):
+                dis = 0
+            
+            distance[0, 0] = dis
         state_dict['dis'] = distance
 
 class FFT:

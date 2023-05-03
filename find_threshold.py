@@ -212,8 +212,8 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
                 pred_trigger = 0
 
         elif mode == 'max':
-            pred_trigger = np.argmax(pred[i])
-
+            pred_trigger = np.argmax(pred[i]).item()
+            
             if pred[i][pred_trigger] >= threshold_prob:
                 pred_isTrigger = True
             else:
@@ -324,7 +324,7 @@ def set_generators(opt, ptime=None):
 def calc_snr(data, isREDPAN=False):
     snr_batch = []
     gt = data['y'][:, 0] if not isREDPAN else data['X'][:, 3]
-
+ 
     for i in range(gt.shape[0]):
         # if not noise waveform, calculate log(SNR)
         tri = torch.where(gt[i] == 1)[0]
@@ -449,7 +449,7 @@ def inference(opt, model, test_loader, device):
                         elif opt.model_opt == 'tsfc':
                             _, out_mag, out = model(data['X'][:, :3].to(device), stft=data['stft'].float().to(device))
                         elif opt.model_opt == 'real_GRADUATE':
-                            _, out_mag, out = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
+                            _, out_mag, out = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device), mean_std=data['mean_std'].float().to(device))
                         else:
                             out = model(data['X'].to(device))
 
@@ -476,8 +476,7 @@ def inference(opt, model, test_loader, device):
                                 out = out.detach().squeeze().cpu().numpy()
                             elif opt.label_type == 'other':
                                 out = out[:, :, 0].detach().squeeze().cpu().numpy()                
-
-                        
+                   
                         # plt.subplot(311)
                         # plt.plot(data['X'][0, :3].T)
                         # plt.subplot(312)
@@ -488,9 +487,13 @@ def inference(opt, model, test_loader, device):
                         # plt.clf()
 
                         target = data['y'][:, 0].squeeze().numpy()
-
-                        pred += [out[i] for i in range(out.shape[0])]
-                        gt += [target[i] for i in range(target.shape[0])]
+                        
+                        if out.ndim == 2:
+                            pred += [out[i] for i in range(out.shape[0])]
+                            gt += [target[i] for i in range(target.shape[0])]
+                        else:
+                            pred += [out]
+                            gt += [target]
             
     return pred, gt, snr_total, intensity_total, mag, dis
 
@@ -503,7 +506,7 @@ def score(pred, gt, snr_total, intensity_total, mode, opt, threshold_prob, thres
     if not opt.dataset_opt == 'REDPAN_dataset':    
         snr_idx = convert_snr_to_level(snr_level, snr_total)
         intensity_idx = convert_intensity_to_level(intensity_level, intensity_total)
-
+        
     if not opt.dataset_opt == 'REDPAN_dataset':
         tp, fp, tn, fn, diff, abs_diff, res, snr_stat, intensity_stat, case_stat = evaluation(pred, gt, snr_idx, len(snr_level), intensity_idx, len(intensity_level), threshold_prob, threshold_trigger, opt.sample_tolerant, mode)
     else:
@@ -558,8 +561,8 @@ def mag_score(mag, dis):
 
         dis_mag_stat[dis_idx].append(mag_diff.item())
 
-        pred.append(mag[i][1])
-        gt.append(mag[i][0])
+        pred.append(mag[i][1].detach().cpu().numpy())
+        gt.append(mag[i][0].numpy())
     
     return abs_diff / len(mag), diff / len(mag), pred, gt, dis_mag_stat
 
@@ -652,6 +655,7 @@ if __name__ == '__main__':
 
     if opt.threshold_type == 'all':
         mode = ['max', 'single', 'continue', 'avg']  # avg, continue
+        # mode = ['single', 'continue', 'avg']
     elif opt.threshold_type == 'avg':
         mode = ['avg']
     elif opt.threshold_type == 'continue':
@@ -666,14 +670,17 @@ if __name__ == '__main__':
         print('finding best criteria...')
         pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, dev_loader, device)
 
-        mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+        if opt.model_opt == 'real_GRADUATE':
+            mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
 
-        with open(os.path.join(output_dir, 'mag_pred.pkl'), 'wb') as f:
-            pickle.dump(mag_pred, f)
-        with open(os.path.join(output_dir, 'mag_gt.pkl'), 'wb') as f:
-            pickle.dump(mag_gt, f)
-        with open(os.path.join(output_dir, 'dismag.json'), 'w') as f:
-            json.dump(dis_mag, f)
+            with open(os.path.join(output_dir, 'mag_pred.pkl'), 'wb') as f:
+                pickle.dump(mag_pred, f)
+            with open(os.path.join(output_dir, 'mag_gt.pkl'), 'wb') as f:
+                pickle.dump(mag_gt, f)
+            with open(os.path.join(output_dir, 'snr_total.pkl'), 'wb') as f:
+                pickle.dump(snr_total, f)
+            with open(os.path.join(output_dir, 'dismag.json'), 'w') as f:
+                json.dump(dis_mag, f)
 
         best_fscore = 0.0
         best_mode = ""
@@ -728,7 +735,8 @@ if __name__ == '__main__':
         logging.info('======================================================')
         logging.info("Best: ")
         logging.info(f"mode: {best_mode}, prob: {best_prob}, trigger: {best_trigger}, fscore: {best_fscore}")
-        logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
+        if opt.model_opt == 'real_GRADUATE':
+            logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
         logging.info('======================================================')
 
     if opt.do_test or opt.dataset_opt == 'stead' or opt.dataset_opt == 'REDPAN_dataset':
@@ -739,18 +747,22 @@ if __name__ == '__main__':
 
         logging.info('Inference on testing set')
         pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, test_loader, device)
-        mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+        if opt.model_opt == 'real_GRADUATE':
+            mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
 
-        with open(os.path.join(output_dir, 'test_mag_pred.pkl'), 'wb') as f:
-            pickle.dump(mag_pred, f)
-        with open(os.path.join(output_dir, 'test_mag_gt.pkl'), 'wb') as f:
-            pickle.dump(mag_gt, f)
-        with open(os.path.join(output_dir, 'test_dismag.json'), 'w') as f:
-            json.dump(dis_mag, f)
+            with open(os.path.join(output_dir, 'test_mag_pred.pkl'), 'wb') as f:
+                pickle.dump(mag_pred, f)
+            with open(os.path.join(output_dir, 'test_mag_gt.pkl'), 'wb') as f:
+                pickle.dump(mag_gt, f)
+            with open(os.path.join(output_dir, 'test_snr_total.pkl'), 'wb') as f:
+                pickle.dump(snr_total, f)
+            with open(os.path.join(output_dir, 'test_dismag.json'), 'w') as f:
+                json.dump(dis_mag, f)
 
         fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
         print('fscore: %.4f' %(fscore))
-        logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
+        if opt.model_opt == 'real_GRADUATE':
+            logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
 
         with open(os.path.join(output_dir, 'test_abs_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
             pickle.dump(abs_diff, f)
@@ -797,7 +809,18 @@ if __name__ == '__main__':
             logging.info('======================================================')
             logging.info('Inference on testing set, ptime: %d' %(ptime))
             pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, test_loader, device)
-            mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+            if opt.model_opt == 'real_GRADUATE':
+                mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+                logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
+
+                with open(os.path.join(new_output_dir, 'test_mag_pred.pkl'), 'wb') as f:
+                    pickle.dump(mag_pred, f)
+                with open(os.path.join(new_output_dir, 'test_mag_gt.pkl'), 'wb') as f:
+                    pickle.dump(mag_gt, f)
+                with open(os.path.join(new_output_dir, 'test_snr_total.pkl'), 'wb') as f:
+                    pickle.dump(snr_total, f)
+                with open(os.path.join(new_output_dir, 'test_dismag.json'), 'w') as f:
+                    json.dump(dis_mag, f)
 
             fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
             print(f"ptime: {ptime}, fscore: {fscore}")

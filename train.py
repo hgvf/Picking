@@ -178,7 +178,7 @@ def eqt_init_lr(epoch, optimizer, scheduler):
             lr *= 1e-3
         elif epoch > 40:
             lr *= 1e-2
-        elif epoch > 20:
+        elif epoch > 15:
             lr *= 1e-1
             
         optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -438,7 +438,12 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
                 elif opt.model_opt == 'tsfc':
                     out_seg, out_mag, out = model(data['X'][:, :3].to(device), stft=data['stft'].float().to(device))
                 elif opt.model_opt == 'real_GRADUATE':
-                    out_seg, out_mag, out = model(data['ori_X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
+                    out_seg, out_mag, out = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device), mean_std=data['mean_std'].float().to(device))
+                elif opt.model_opt == 'real_GRADUATE_noNorm':
+                    out_seg, out_mag, out = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
+                elif opt.model_opt == 'real_GRADUATE_noNorm_double':
+                    wf = torch.cat((data['X'], data['ori_X']), dim=1)
+                    out_seg, out_mag, out = model(wf.to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
                 else:
                     out = model(data['X'].to(device))
                 
@@ -473,7 +478,7 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
                         loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
                     elif opt.label_type == 'all':
                         loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
-                elif opt.model_opt == 'real_GRADUATE':
+                elif opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'real_GRADUATE_noNorm' or opt.model_opt == 'real_GRADUATE_noNorm_double':
                     loss = loss_fn(opt, pred=(out_seg, out_mag, out), gt=(data['seg'], data['mag'], data['y'], data['detections'], data['dis']), device=device)
                 elif opt.model_opt == 'eqt':
                     loss = loss_fn(opt, out, (data['y'], data['detections']), device, eqt_regularization=(model, eqt_reg))
@@ -495,7 +500,7 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
 
             if not opt.noam:
                 optimizer.zero_grad()
-
+        
         train_loss = train_loss + loss.detach().cpu().item()*opt.gradient_accumulation
         train_loop.set_description(f"[Train Epoch {cur_epoch+1}/{opt.epochs}]")
         train_loop.set_postfix(loss=loss.detach().cpu().item()*opt.gradient_accumulation)
@@ -570,7 +575,12 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
                     elif opt.model_opt == 'GRADUATE':
                         out_seg, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
                     elif opt.model_opt == 'real_GRADUATE':
-                        out_seg, out_mag, out = model(data['ori_X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
+                        out_seg, out_mag, out = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device), mean_std=data['mean_std'].float().to(device))
+                    elif opt.model_opt == 'real_GRADUATE_noNorm':
+                        out_seg, out_mag, out = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
+                    elif opt.model_opt == 'real_GRADUATE_noNorm_double':
+                        wf = torch.cat((data['X'], data['ori_X']), dim=1)
+                        out_seg, out_mag, out = model(wf.to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
                     elif opt.model_opt == 'tsfc':
                         out_seg, out_mag, out = model(data['X'][:, :3].to(device), stft=data['stft'].float().to(device))
                     else:
@@ -583,7 +593,7 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
                             loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
                         elif opt.label_type == 'all':
                             loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
-                    elif opt.model_opt == 'real_GRADUATE':
+                    elif opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'real_GRADUATE_noNorm' or opt.model_opt == 'real_GRADUATE_noNorm_double':
                         loss = loss_fn(opt, pred=(out_seg, out_mag, out), gt=(data['seg'], data['mag'], data['y'], data['detections'], data['dis']), device=device)
                     elif opt.model_opt == 'eqt':
                         loss = loss_fn(opt, out, (data['y'], data['detections']), device, eqt_regularization=(model, eqt_reg))
@@ -600,6 +610,17 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
     valid_loss = dev_loss / (len(dataloader))
 
     return valid_loss
+
+def save_after_train(output_dir, epoch, model, optimizer, min_loss):
+    # save every epoch
+    targetPath = os.path.join(output_dir, f"model_epoch{epoch}.pt")
+
+    torch.save({
+        'model': model.state_dict(),
+        'optimizer': optimizer,
+        'min_loss': min_loss,
+        'epoch': epoch
+    }, targetPath)
 
 if __name__ == '__main__':
     opt = parse_args()
@@ -628,6 +649,7 @@ if __name__ == '__main__':
     if opt.pretrained_emb is not None:
         logging.info('loading pretrained embedding: %s' %(opt.pretrained_emb))
 
+    print('loading model...')
     model = load_model(opt, device)
     
     # collect the module's name to regularization, only for Eqt
@@ -759,16 +781,19 @@ if __name__ == '__main__':
 
         if opt.model_opt == 'RED_PAN':
             train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, redpan_loss=(PS_loss, M_loss))
+            save_after_train(output_dir, epoch, model, optimizer, min_loss)
             valid_loss = valid(model, dev_loader, device, epoch, opt, redpan_loss=(PS_loss, M_loss))
         elif opt.model_opt == 'eqt' or opt.model_opt == 'tsfc':
             optimizer, scheduler = eqt_init_lr(epoch, optimizer, scheduler)
 
             train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, Taiwan_aug=isTaiwanAug, eqt_reg=eqt_reg)
+            save_after_train(output_dir, epoch, model, optimizer, min_loss)
             valid_loss = valid(model, dev_loader, device, epoch, opt, Taiwan_aug=isTaiwanAug, eqt_reg=eqt_reg)
         
             scheduler.step(valid_loss)
         else:
             train_loss = train(model, optimizer, train_loader, dev_loader, device, epoch, opt, output_dir, Taiwan_aug=isTaiwanAug)
+            save_after_train(output_dir, epoch, model, optimizer, min_loss)
             valid_loss = valid(model, dev_loader, device, epoch, opt, Taiwan_aug=isTaiwanAug)
 
         if opt.model_opt == 'RED_PAN':

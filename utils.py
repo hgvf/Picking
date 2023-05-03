@@ -29,7 +29,11 @@ def load_dataset(opt):
         print('loading STEAD')
         kwargs={'download_kwargs': {'basepath': '/mnt/nas3/earthquake_dataset_large/script/STEAD/'}}
         stead = sbd.STEAD(**kwargs)
-        stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True)
+
+        if opt.model_opt == 'real_GRADUATE':
+            stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True, magnitude=True)
+        else:
+            stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True)
 
     if opt.dataset_opt == 'cwbsn' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan' or opt.dataset_opt == 'EEW':
         # CWBSN 
@@ -73,7 +77,7 @@ def load_dataset(opt):
 
     return cwbsn, tsmip, stead, cwbsn_noise
 
-def apply_filter(data, snr_threshold=-1, isCWBSN=False, level=-1, s_wave=False, isStead=False, isNoise=False, instrument='all', noise_sample=200000):
+def apply_filter(data, snr_threshold=-1, isCWBSN=False, level=-1, s_wave=False, isStead=False, isNoise=False, instrument='all', noise_sample=200000, magnitude=False):
     # Apply filter on seisbench.data class
 
     print('original traces: ', len(data))
@@ -115,6 +119,12 @@ def apply_filter(data, snr_threshold=-1, isCWBSN=False, level=-1, s_wave=False, 
     if isNoise and noise_sample != -1:
         noise_mask = data.metadata['Unnamed: 0'] < noise_sample
         data.filter(noise_mask)
+
+    if isStead and magnitude:
+        magnitude_earthquake_mask = np.logical_and(data.metadata['source_magnitude_type'] == 'ml', data.metadata['trace_category'] == 'earthquake_local')
+        magnitude_noise_mask = data.metadata['trace_category'] == 'noise'
+        magnitude_mask = np.logical_or(magnitude_earthquake_mask, magnitude_noise_mask)
+        data.filter(magnitude_mask)
 
     print('filtered traces: ', len(data))
 
@@ -547,6 +557,87 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 augmentations = [
                     sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_mean_std=True, keep_ori=True,),
+                    sbg.STFT(),
+                    sbg.FFT(),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+            else:
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_mean_std=True, keep_ori=True),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
+                    sbg.STFT(),
+                    sbg.FFT(),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+        elif EEW:
+            augmentations = [
+                sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=4000, selection="first", strategy="pad"),
+                sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
+                sbg.VtoA(),
+                sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_mean_std=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
+                sbg.STFT(),
+                sbg.FFT(),
+                sbg.CharStaLta(),
+                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                sbg.ChangeDtype(np.float32),
+                sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),]
+        else:
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_mean_std=True),
+                    sbg.STFT(),
+                    sbg.FFT(),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+            ]
+            else:
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1, amp_norm_type='std', amp_norm_axis=-1, keep_mean_std=True),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
+                    sbg.STFT(),
+                    sbg.FFT(),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+    elif opt.model_opt == 'real_GRADUATE_noNorm':
+        p_phases = 'trace_p_arrival_sample'
+        s_phases = 'trace_s_arrival_sample'
+        
+        phase_dict = [p_phases, s_phases]
+
+        if test:
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                     sbg.Normalize(demean_axis=-1, keep_ori=True),
                     sbg.STFT(),
                     sbg.FFT(),
@@ -578,10 +669,91 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=4000, selection="first", strategy="pad"),
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
                 sbg.VtoA(),
-                sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                sbg.Normalize(demean_axis=-1),
                 sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.STFT(),
                 sbg.FFT(),
+                sbg.CharStaLta(),
+                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                sbg.ChangeDtype(np.float32),
+                sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),]
+        else:
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.Normalize(demean_axis=-1),
+                    sbg.STFT(),
+                    sbg.FFT(),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+            ]
+            else:
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
+                    sbg.STFT(),
+                    sbg.FFT(),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+    elif opt.model_opt == 'real_GRADUATE_noNorm_double':
+        p_phases = 'trace_p_arrival_sample'
+        s_phases = 'trace_s_arrival_sample'
+        
+        phase_dict = [p_phases, s_phases]
+
+        if test:
+            if opt.dataset_opt == 'stead':
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                    sbg.STFT(key="ori_X"),
+                    sbg.FFT(key="ori_X"),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(train=True),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+            else:
+                augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+                    sbg.VtoA(),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                    sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
+                    sbg.STFT(key="ori_X"),
+                    sbg.FFT(key="ori_X"),
+                    sbg.Magnitude(),
+                    sbg.CharStaLta(train=True),
+                    sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                    sbg.ChangeDtype(np.float32),
+                    sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=20, dim=0),
+                    sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4)
+                ]
+        elif EEW:
+            augmentations = [
+                sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=4000, selection="first", strategy="pad"),
+                sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
+                sbg.VtoA(),
+                sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
+                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
+                sbg.STFT(key="ori_X"),
+                sbg.FFT(key="ori_X"),
                 sbg.CharStaLta(train=True),
                 sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
                 sbg.ChangeDtype(np.float32),
@@ -592,8 +764,8 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                     sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
-                    sbg.STFT(),
-                    sbg.FFT(),
+                    sbg.STFT(key="ori_X"),
+                    sbg.FFT(key="ori_X"),
                     sbg.Magnitude(),
                     sbg.CharStaLta(train=True),
                     sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
@@ -606,10 +778,10 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                     sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
                     sbg.VtoA(),
-                    sbg.Normalize(demean_axis=-1, amp_norm_type='std', keep_ori=True),
+                    sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
                     sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
-                    sbg.STFT(),
-                    sbg.FFT(),
+                    sbg.STFT(key="ori_X"),
+                    sbg.FFT(key="ori_X"),
                     sbg.Magnitude(),
                     sbg.CharStaLta(train=True),
                     sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
@@ -624,6 +796,10 @@ def load_model(opt, device):
 
     if opt.model_opt == 'real_GRADUATE':
         model = REAL_GRADUATE(d_model=opt.d_model, conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers)
+    elif opt.model_opt == 'real_GRADUATE_noNorm':
+        model = REAL_GRADUATE_noNorm(d_model=opt.d_model, conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers)
+    elif opt.model_opt == 'real_GRADUATE_noNorm_double':
+        model = REAL_GRADUATE_doubleWave(d_model=opt.d_model, conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers)
     elif opt.model_opt == 'tsfc':
         model = TSFC_Unet(isConformer=opt.isConformer)
     elif opt.model_opt == 'eqt':
@@ -660,8 +836,8 @@ def load_model(opt, device):
     elif opt.model_opt == 'anticopy_conformer':
         model = AntiCopy_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l)
     elif opt.model_opt == 'RED_PAN':
-        model = RED_PAN().double()
-        # model = RED_PAN()
+        # model = RED_PAN().double()
+        model = RED_PAN()
         # model = mtan_R2unet().double()
     elif opt.model_opt == 'GRADUATE':
         rep_KV = True if opt.rep_KV == 'True' else False
@@ -947,7 +1123,7 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
             loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss
         else:
             loss = picking_loss
-    elif opt.model_opt == 'real_GRADUATE':
+    elif opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'real_GRADUATE_noNorm' or opt.model_opt == 'real_GRADUATE_noNorm_double':
         pred_seg, pred_mag, pred_picking = pred
         seg_gt, mag_gt, picking_gt, detection_gt, distance = gt
         
@@ -983,7 +1159,7 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
         weights = torch.max(mag_gt, dim=1).values
         # weights[weights==0] = -2
         # mag_gt[mag_gt==0] = -2
-
+        
         mag_gt = weights.clone()
         weights = weights * 3
         weights[weights==0] = 1

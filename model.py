@@ -54,8 +54,8 @@ class cross_attn(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
-        
-    def forward(self, q, k, v, mask=None):
+
+    def forward(self, q, k, v, mask=None, mean=None, std=None):
         d_k, d_v, nhead = self.d_k, self.d_v, self.nhead
         sz_b, len_q, len_k, len_v = q.size(0), q.size(1), k.size(1), v.size(1)
         residual = q
@@ -71,8 +71,14 @@ class cross_attn(nn.Module):
         
         if mask is not None:
             mask = mask.unsqueeze(1)   # For head axis broadcasting.
-            
-        attn = torch.matmul(q / d_k**0.5, k.transpose(-2, -1))
+        
+        if mean is not None and std is not None:
+            mean = mean.unsqueeze(1).unsqueeze(1)
+            std = std.unsqueeze(1).unsqueeze(1)
+            attn = torch.matmul(q, k.transpose(-2, -1)) * mean + std
+            attn = attn / d_k**0.5
+        else:
+            attn = torch.matmul(q / d_k**0.5, k.transpose(-2, -1))
         
         if mask is not None:
             attn = attn.masked_fill(mask == 0, -1e9)
@@ -107,8 +113,8 @@ class cross_attn_layer(nn.Module):
             self.proj = True
             self.projector = nn.Conv1d(d_model, conformer_class, kernel_size=3, padding='same')
             
-    def forward(self, q, k, v):
-        out_attn = self.cross_attn(q, k, v)
+    def forward(self, q, k, v, mean=None, std=None):
+        out_attn = self.cross_attn(q, k, v, mean=mean, std=std)
             
         out = self.layer_norm(self.ffn(out_attn) + out_attn)
         out = self.dropout(out)
@@ -245,6 +251,30 @@ class Emb(nn.Module):
         emb = self.embedding[ids]
         
         return emb
+
+class ScalarProjector(nn.Module):
+    def __init__(self, output_dim, enc_dim=3, seq_len=3000):
+        super(ScalarProjector, self).__init__()
+
+        self.conv = nn.Conv1d(in_channels=seq_len, out_channels=1, kernel_size=3, padding=1, padding_mode='circular', bias=False)
+        self.mlp = nn.Sequential(nn.Linear(2*enc_dim, 16),
+                                nn.ReLU(),
+                                nn.Linear(16, 32),
+                                nn.ReLU(),)
+        self.out = nn.Linear(32, output_dim)
+
+    def forward(self, wf, stats):
+        # wf must follow in shape: (batch, seq_len, chn)
+        out = self.conv(wf.permute(0,2,1))
+
+        # stats: (batch, 3)
+        stats = stats.unsqueeze(1)
+        out = torch.cat([out, stats], dim=1)
+        out = out.view(wf.shape[0], -1)
+
+        out = self.out(self.mlp(out))
+
+        return out
 
 class Residual_Unet(nn.Module):
     def __init__(self, conformer_class, nhead, d_ffn ,dec_layers, res_dec):
@@ -1190,23 +1220,20 @@ class REAL_GRADUATE(nn.Module):
                                           num_attention_heads=n_head, num_encoder_layers=enc_layers, subsample=False)
         
         self.downconv1 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=5, stride=3),
-                                      nn.ReLU(),
-                                      nn.Dropout(0.1))
+                                      nn.ReLU(),)
         self.downconv2 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=5, stride=3),
-                                      nn.ReLU(),
-                                      nn.Dropout(0.1))
+                                      nn.ReLU(),)
         
         self.downconv3 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=7, stride=5),
                                       nn.ReLU(),
-                                      nn.Dropout(0.1))
+                                      nn.Dropout(0.1),)
         
         # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
         #                   Bottleneck                  # 
         # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
         self.bottleneck = nn.ModuleList([nn.Sequential(nn.Conv1d(d_model, d_model, kernel_size=3, padding='same'),
                             nn.BatchNorm1d(d_model),
-                            nn.ReLU(),
-                            nn.Dropout(0.1),) for _ in range(5)])
+                            nn.ReLU(),) for _ in range(5)])
         
         # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
         #                      STFT                     # 
@@ -1226,13 +1253,14 @@ class REAL_GRADUATE(nn.Module):
                                           num_attention_heads=n_head, num_encoder_layers=enc_layers, subsample=False)
         
         self.upconv1 = nn.Sequential(nn.Upsample(332),
-                                    nn.Conv1d(d_model, d_model*3, kernel_size=3, padding='same'))
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=3, padding='same'),)
         
         self.upconv2 = nn.Sequential(nn.Upsample(999),
                                     nn.Conv1d(d_model, d_model*3, kernel_size=5, padding='same'))
         
         self.upconv3 = nn.Sequential(nn.Upsample(3000),
-                                    nn.Conv1d(d_model, d_model*3, kernel_size=7, padding='same'))
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=7, padding='same'),
+                                    nn.Dropout(0.1),)
         
         self.picking_out = nn.Sequential(nn.Linear(d_model, 3),
                                         nn.Sigmoid(),)
@@ -1245,7 +1273,7 @@ class REAL_GRADUATE(nn.Module):
         self.TS_crossattn = cross_attn_layer(n_head, d_model//n_head, d_model//n_head, 
                                              d_model, d_model, d_ffn)
     
-        self.TS_out = nn.Linear(d_model, 1)
+        self.TS_out = nn.Conv1d(d_model, 1, kernel_size=5, padding='same')
         self.STFT_to_TS = nn.Linear(dim_stft, d_model)
         self.sigmoid = nn.Sigmoid()
                                         
@@ -1267,6 +1295,12 @@ class REAL_GRADUATE(nn.Module):
         self.mag_fft_crossattn = cross_attn_layer(n_head, d_model*2//n_head, d_model*2//n_head, 
                                              d_model*2, d_model*2, d_ffn)
         
+        self.mag_std_scalar = ScalarProjector(output_dim=66)
+        self.mag_mean_scalar = ScalarProjector(output_dim=1)
+
+        self.mag_selfattn = cross_attn_layer(n_head, d_model*2//n_head, d_model*2//n_head, 
+                                             d_model*2, d_model*2, d_ffn)
+
         self.mag_out = nn.Sequential(nn.Conv1d(24, 16, kernel_size=3, padding='same'),
                                       nn.BatchNorm1d(16),
                                       nn.MaxPool1d(3),
@@ -1284,6 +1318,199 @@ class REAL_GRADUATE(nn.Module):
                                       nn.MaxPool1d(2),
                                       nn.ReLU(),)
         
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, wave, stft, fft, mean_std):
+        # print('original: ', wave.shape)
+        
+        # downsampling encoder
+        downconv1 = self.downconv1(wave)
+        # print('downconv1: ', downconv1.shape)
+        
+        enc_conformer1, _ = self.shared_ENCconformer(downconv1.permute(0,2,1), downconv1.shape[-1])
+        # print('conformer1: ', enc_conformer1.shape)
+        
+        downconv2 = self.downconv2(enc_conformer1.permute(0,2,1))
+        # print('downconv2: ', downconv2.shape)
+        
+        enc_conformer2, _ = self.shared_ENCconformer(downconv2.permute(0,2,1), downconv2.shape[-1])
+        # print('conformer2: ', enc_conformer2.shape)
+        
+        downconv3 = self.downconv3(enc_conformer2.permute(0,2,1))
+        # print('downconv3: ', downconv3.shape)
+        
+        enc_conformer3, _ = self.shared_ENCconformer(downconv3.permute(0,2,1), downconv3.shape[-1])
+        # print('conformer3: ', enc_conformer3.shape)
+        
+        for idx, layer in enumerate(self.bottleneck):
+            if idx == 0:
+                bottleneck_out = layer(enc_conformer3.permute(0,2,1))
+            else:
+                bottleneck_out = layer(enc_conformer3.permute(0,2,1)) + bottleneck_out
+                
+        # print('bottleneck_out: ', bottleneck_out.shape)
+        
+        # recover the length of STFT to orignal length of trace
+        stft_posemb = self.STFT_posemb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+        stft_vector = self.STFT_crossattn(stft_posemb, stft, stft)
+        # print('stft_vector: ', stft_vector.shape)
+        
+        # Temporal segmentation
+        ts_posemb = self.TS_posemb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+        ts_out = self.TS_crossattn(ts_posemb, bottleneck_out.permute(0,2,1), bottleneck_out.permute(0,2,1))
+        ts_out = self.STFT_to_TS(stft_vector) + ts_out
+        ts_out = self.TS_out(ts_out.permute(0,2,1)).permute(0,2,1)
+        ts_out = self.sigmoid(ts_out)
+        # print('ts_out: ', ts_out.shape)
+        
+        # Magnitude estimation
+
+        # mean_std: (batch, 6)
+        mean, std = mean_std[:, :3], mean_std[:, 3:]
+       
+        mean_scalar = self.mag_mean_scalar(wave[:, :3], mean)
+        std_scalar = self.mag_std_scalar(wave[:, :3], std)
+
+        fft_vector = self.fft_converter(fft)[:, :, 8:-8].permute(0,2,1)
+        mag_hidden_state, _ = self.mag_lstm(enc_conformer3)
+        mag_out = self.mag_fft_crossattn(fft_vector, mag_hidden_state, mag_hidden_state)
+        mag_out = self.mag_selfattn(mag_out, mag_out, mag_out, mean=mean_scalar, std=std_scalar)
+       
+        mag_out = self.mag_out(mag_out.permute(0,2,1))
+        # print('mag_out: ', mag_out.shape)        
+        
+        # P/S phase picking
+        upconv1 = self.upconv1(bottleneck_out)
+        # print('upconv1: ', upconv1.shape)
+        
+        dec_conformer1, _ = self.shared_DECconformer(upconv1.permute(0,2,1), upconv1.shape[-1])
+        # print('dec_conformer1: ', dec_conformer1.shape)
+        
+        upconv2 = self.upconv2((dec_conformer1+enc_conformer2).permute(0,2,1))
+        # print('upconv2: ', upconv2.shape)
+        
+        dec_conformer2, _ = self.shared_DECconformer(upconv2.permute(0,2,1), upconv2.shape[-1])
+        # print('dec_conformer2: ', dec_conformer2.shape)
+        
+        upconv3 = self.upconv3((dec_conformer2+enc_conformer1).permute(0,2,1))
+        # print('upconv1: ', upconv3.shape)
+        
+        dec_conformer3, _ = self.shared_DECconformer(upconv3.permute(0,2,1), upconv3.shape[-1])
+        # print('dec_conformer3: ', dec_conformer3.shape)
+        
+        picking_out = self.picking_out(dec_conformer3+self.STFT_to_picking(stft_vector))
+        # print('picking_out: ', picking_out.shape)
+        
+        return ts_out, mag_out, picking_out     
+
+class REAL_GRADUATE_noNorm(nn.Module):
+    def __init__(self, d_model=12, conformer_class=16, d_ffn=64, n_head=2, enc_layers=2, wave_length=3000):
+        super(REAL_GRADUATE_noNorm, self).__init__()
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                    Encoder                    # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.shared_ENCconformer = Conformer(num_classes=d_model, input_dim=d_model*3, encoder_dim=d_ffn, 
+                                          num_attention_heads=n_head, num_encoder_layers=enc_layers, subsample=False)
+        
+        self.downconv1 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=5, stride=3),
+                                      nn.ReLU(),)
+        self.downconv2 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=5, stride=3),
+                                      nn.ReLU(),)
+        
+        self.downconv3 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=7, stride=5),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),)
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                   Bottleneck                  # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.bottleneck = nn.ModuleList([nn.Sequential(nn.Conv1d(d_model, d_model, kernel_size=3, padding='same'),
+                            nn.BatchNorm1d(d_model),
+                            nn.ReLU(),) for _ in range(5)])
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                      STFT                     # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        dim_stft = 32
+        self.STFT_posemb = PositionalEncoding(dim_stft, max_len=wave_length, return_vec=True)
+        
+        self.STFT_crossattn = cross_attn_layer(n_head, dim_stft//n_head, dim_stft//n_head, 
+                                             dim_stft, dim_stft, d_ffn)
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                 Phase Picking                 # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.STFT_to_picking = nn.Linear(dim_stft, d_model)
+        
+        self.shared_DECconformer = Conformer(num_classes=d_model, input_dim=d_model*3, encoder_dim=d_ffn, 
+                                          num_attention_heads=n_head, num_encoder_layers=enc_layers, subsample=False)
+        
+        self.upconv1 = nn.Sequential(nn.Upsample(332),
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=3, padding='same'),)
+        
+        self.upconv2 = nn.Sequential(nn.Upsample(999),
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=5, padding='same'))
+        
+        self.upconv3 = nn.Sequential(nn.Upsample(3000),
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=7, padding='same'),
+                                    nn.Dropout(0.1),)
+        
+        self.picking_out = nn.Sequential(nn.Linear(d_model, 3),
+                                        nn.Sigmoid(),)
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #             Temporal Segmentation             # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.TS_posemb = PositionalEncoding(d_model, max_len=wave_length, return_vec=True)
+        
+        self.TS_crossattn = cross_attn_layer(n_head, d_model//n_head, d_model//n_head, 
+                                             d_model, d_model, d_ffn)
+    
+        self.TS_out = nn.Conv1d(d_model, 1, kernel_size=5, padding='same')
+        self.STFT_to_TS = nn.Linear(dim_stft, d_model)
+        self.sigmoid = nn.Sigmoid()
+                                        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #              Magnitude estimation             # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.mag_lstm = nn.LSTM(d_model, d_model, batch_first=True, bidirectional=True, dropout=0.1, num_layers=2)
+
+        self.fft_converter = nn.Sequential(nn.Conv1d(1, d_model//2, kernel_size=3, stride=2),
+                                          nn.BatchNorm1d(d_model//2),
+                                          nn.ReLU(),
+                                          nn.Conv1d(d_model//2, d_model, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(d_model),
+                                          nn.ReLU(),
+                                          nn.Conv1d(d_model, d_model*2, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(d_model*2),
+                                          nn.ReLU(),)
+        
+        self.mag_fft_crossattn = cross_attn_layer(n_head, d_model*2//n_head, d_model*2//n_head, 
+                                             d_model*2, d_model*2, d_ffn)
+
+        self.mag_selfattn = cross_attn_layer(n_head, d_model*2//n_head, d_model*2//n_head, 
+                                             d_model*2, d_model*2, d_ffn)
+
+        self.mag_out = nn.Sequential(nn.Conv1d(24, 16, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(16),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(16, 8, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(8),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(8, 4, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(4),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(4, 1, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(1),
+                                      nn.MaxPool1d(2),
+                                      nn.ReLU(),)
+        
+        self.dropout = nn.Dropout(0.1)
+
     def forward(self, wave, stft, fft):
         # print('original: ', wave.shape)
         
@@ -1322,7 +1549,8 @@ class REAL_GRADUATE(nn.Module):
         # Temporal segmentation
         ts_posemb = self.TS_posemb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
         ts_out = self.TS_crossattn(ts_posemb, bottleneck_out.permute(0,2,1), bottleneck_out.permute(0,2,1))
-        ts_out = self.TS_out(self.STFT_to_TS(stft_vector) + ts_out)
+        ts_out = self.STFT_to_TS(stft_vector) + ts_out
+        ts_out = self.TS_out(ts_out.permute(0,2,1)).permute(0,2,1)
         ts_out = self.sigmoid(ts_out)
         # print('ts_out: ', ts_out.shape)
         
@@ -1330,8 +1558,9 @@ class REAL_GRADUATE(nn.Module):
         fft_vector = self.fft_converter(fft)[:, :, 8:-8].permute(0,2,1)
         mag_hidden_state, _ = self.mag_lstm(enc_conformer3)
         mag_out = self.mag_fft_crossattn(fft_vector, mag_hidden_state, mag_hidden_state)
-        mag_out = self.mag_out(mag_hidden_state.permute(0,2,1))
-        # mag_out = self.mag_out(mag_out.permute(0,2,1))
+        mag_out = self.mag_selfattn(mag_out, mag_out, mag_out)
+       
+        mag_out = self.mag_out(mag_out.permute(0,2,1))
         # print('mag_out: ', mag_out.shape)        
         
         # P/S phase picking
@@ -1357,3 +1586,187 @@ class REAL_GRADUATE(nn.Module):
         # print('picking_out: ', picking_out.shape)
         
         return ts_out, mag_out, picking_out     
+
+class REAL_GRADUATE_doubleWave(nn.Module):
+    def __init__(self, d_model=12, conformer_class=16, d_ffn=64, n_head=2, enc_layers=2, wave_length=3000):
+        super(REAL_GRADUATE_doubleWave, self).__init__()
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                    Encoder                    # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.shared_ENCconformer = Conformer(num_classes=d_model, input_dim=d_model*3, encoder_dim=d_ffn, 
+                                          num_attention_heads=n_head, num_encoder_layers=enc_layers, subsample=False)
+        
+        self.downconv1 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=5, stride=3),
+                                      nn.ReLU(),)
+        self.downconv2 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=5, stride=3),
+                                      nn.ReLU(),)
+        
+        self.downconv3 = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=7, stride=5),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),)
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                   Bottleneck                  # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.bottleneck = nn.ModuleList([nn.Sequential(nn.Conv1d(d_model, d_model, kernel_size=3, padding='same'),
+                            nn.BatchNorm1d(d_model),
+                            nn.ReLU(),) for _ in range(5)])
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                      STFT                     # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        dim_stft = 32
+        self.STFT_posemb = PositionalEncoding(dim_stft, max_len=wave_length, return_vec=True)
+        
+        self.STFT_crossattn = cross_attn_layer(n_head, dim_stft//n_head, dim_stft//n_head, 
+                                             dim_stft, dim_stft, d_ffn)
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #                 Phase Picking                 # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.STFT_to_picking = nn.Linear(dim_stft, d_model)
+        
+        self.shared_DECconformer = Conformer(num_classes=d_model, input_dim=d_model*3, encoder_dim=d_ffn, 
+                                          num_attention_heads=n_head, num_encoder_layers=enc_layers, subsample=False)
+        
+        self.upconv1 = nn.Sequential(nn.Upsample(332),
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=3, padding='same'),)
+        
+        self.upconv2 = nn.Sequential(nn.Upsample(999),
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=5, padding='same'))
+        
+        self.upconv3 = nn.Sequential(nn.Upsample(3000),
+                                    nn.Conv1d(d_model, d_model*3, kernel_size=7, padding='same'),
+                                    nn.Dropout(0.1),)
+        
+        self.picking_out = nn.Sequential(nn.Linear(d_model, 3),
+                                        nn.Sigmoid(),)
+        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #             Temporal Segmentation             # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.TS_posemb = PositionalEncoding(d_model, max_len=wave_length, return_vec=True)
+        
+        self.TS_crossattn = cross_attn_layer(n_head, d_model//n_head, d_model//n_head, 
+                                             d_model, d_model, d_ffn)
+    
+        self.TS_out = nn.Conv1d(d_model, 1, kernel_size=5, padding='same')
+        self.STFT_to_TS = nn.Linear(dim_stft, d_model)
+        self.sigmoid = nn.Sigmoid()
+                                        
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #              Magnitude estimation             # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.mag_lstm = nn.LSTM(d_model, d_model, batch_first=True, bidirectional=True, dropout=0.1, num_layers=2)
+
+        self.fft_converter = nn.Sequential(nn.Conv1d(1, d_model//2, kernel_size=3, stride=2),
+                                          nn.BatchNorm1d(d_model//2),
+                                          nn.ReLU(),
+                                          nn.Conv1d(d_model//2, d_model, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(d_model),
+                                          nn.ReLU(),
+                                          nn.Conv1d(d_model, d_model*2, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(d_model*2),
+                                          nn.ReLU(),)
+        
+        self.mag_fft_crossattn = cross_attn_layer(n_head, d_model*2//n_head, d_model*2//n_head, 
+                                             d_model*2, d_model*2, d_ffn)
+
+        self.mag_selfattn = cross_attn_layer(n_head, d_model*2//n_head, d_model*2//n_head, 
+                                             d_model*2, d_model*2, d_ffn)
+
+        self.mag_out = nn.Sequential(nn.Conv1d(48, 32, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(32),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(32, 16, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(16),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(16, 8, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(8),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(8, 1, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(1),
+                                      nn.MaxPool1d(2),
+                                      nn.ReLU(),)
+        
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, wave, stft, fft):
+        # print('original: ', wave.shape)
+        
+        # downsampling encoder
+        downconv1 = self.downconv1(wave)
+        # print('downconv1: ', downconv1.shape)
+        
+        enc_conformer1, _ = self.shared_ENCconformer(downconv1.permute(0,2,1), downconv1.shape[-1])
+        # print('conformer1: ', enc_conformer1.shape)
+        
+        downconv2 = self.downconv2(enc_conformer1.permute(0,2,1))
+        # print('downconv2: ', downconv2.shape)
+        
+        enc_conformer2, _ = self.shared_ENCconformer(downconv2.permute(0,2,1), downconv2.shape[-1])
+        # print('conformer2: ', enc_conformer2.shape)
+        
+        downconv3 = self.downconv3(enc_conformer2.permute(0,2,1))
+        # print('downconv3: ', downconv3.shape)
+        
+        enc_conformer3, _ = self.shared_ENCconformer(downconv3.permute(0,2,1), downconv3.shape[-1])
+        # print('conformer3: ', enc_conformer3.shape)
+        
+        for idx, layer in enumerate(self.bottleneck):
+            if idx == 0:
+                bottleneck_out = layer(enc_conformer3.permute(0,2,1))
+            else:
+                bottleneck_out = layer(enc_conformer3.permute(0,2,1)) + bottleneck_out
+                
+        # print('bottleneck_out: ', bottleneck_out.shape)
+        
+        # recover the length of STFT to orignal length of trace
+        stft_posemb = self.STFT_posemb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+        stft_vector = self.STFT_crossattn(stft_posemb, stft, stft)
+        # print('stft_vector: ', stft_vector.shape)
+        
+        # Temporal segmentation
+        ts_posemb = self.TS_posemb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+        ts_out = self.TS_crossattn(ts_posemb, bottleneck_out.permute(0,2,1), bottleneck_out.permute(0,2,1))
+        ts_out = self.STFT_to_TS(stft_vector) + ts_out
+        ts_out = self.TS_out(ts_out.permute(0,2,1)).permute(0,2,1)
+        ts_out = self.sigmoid(ts_out)
+        # print('ts_out: ', ts_out.shape)
+        
+        # Magnitude estimation
+        fft_vector = self.fft_converter(fft)[:, :, 8:-8].permute(0,2,1)
+        mag_hidden_state, _ = self.mag_lstm(enc_conformer3)
+        mag_out = self.mag_fft_crossattn(fft_vector, mag_hidden_state, mag_hidden_state)
+        mag_out = self.mag_selfattn(mag_out, mag_out, mag_out)
+       
+        mag_out = self.mag_out(mag_out.permute(0,2,1))
+        # print('mag_out: ', mag_out.shape)        
+        
+        # P/S phase picking
+        upconv1 = self.upconv1(bottleneck_out)
+        # print('upconv1: ', upconv1.shape)
+        
+        dec_conformer1, _ = self.shared_DECconformer(upconv1.permute(0,2,1), upconv1.shape[-1])
+        # print('dec_conformer1: ', dec_conformer1.shape)
+        
+        upconv2 = self.upconv2((dec_conformer1+enc_conformer2).permute(0,2,1))
+        # print('upconv2: ', upconv2.shape)
+        
+        dec_conformer2, _ = self.shared_DECconformer(upconv2.permute(0,2,1), upconv2.shape[-1])
+        # print('dec_conformer2: ', dec_conformer2.shape)
+        
+        upconv3 = self.upconv3((dec_conformer2+enc_conformer1).permute(0,2,1))
+        # print('upconv1: ', upconv3.shape)
+        
+        dec_conformer3, _ = self.shared_DECconformer(upconv3.permute(0,2,1), upconv3.shape[-1])
+        # print('dec_conformer3: ', dec_conformer3.shape)
+        
+        picking_out = self.picking_out(dec_conformer3+self.STFT_to_picking(stft_vector))
+        # print('picking_out: ', picking_out.shape)
+        
+        return ts_out, mag_out, picking_out
