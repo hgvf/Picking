@@ -607,6 +607,8 @@ if __name__ == '__main__':
     parser.add_argument('--compare', type=bool, default=False)
     parser.add_argument('--compare_save_path', type=str, default='tmp')
     parser.add_argument("--level", type=int, default=-1)
+    parser.add_argument('--allTest', type=bool, default=False)
+    parser.add_argument('--p_timestep', type=int)
     opt = parser.parse_args()
 
     output_dir = os.path.join('./results', opt.save_path)
@@ -615,12 +617,16 @@ if __name__ == '__main__':
     if not os.path.exists(stat_dir):
         os.makedirs(stat_dir)
 
-    if opt.level == -1:
-        level = 'all'
-    else:
-        level = str(opt.level)
+    if not opt.allTest:
+        if opt.level == -1:
+            level = 'all'
+        else:
+            level = str(opt.level)
 
-    output_dir = os.path.join(output_dir, level)
+        output_dir = os.path.join(output_dir, level)
+    else:
+        output_dir = os.path.join(output_dir, 'allTest_taiwan')
+        output_dir = os.path.join(output_dir, str(opt.p_timestep))
 
     # snr_level = list(np.arange(0.0, 3.5, 0.25)) + list(np.arange(3.5, 5.5, 0.5))
     snr_level = [-9999] + list(np.arange(-1.0, 0.0, 0.5)) + list(np.arange(0.0, 3.5, 0.25)) + list(np.arange(3.5, 5.5, 0.5))

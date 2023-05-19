@@ -932,7 +932,7 @@ class AntiCopy_Conformer(nn.Module):
 class GRADUATE(nn.Module):
     def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, 
                  cross_attn_type, seg_proj_type='crossattn', encoder_type='conformer', decoder_type='crossattn', 
-                 rep_KV=True, label_type='p', recover_type="crossattn", res_dec=False):
+                 rep_KV=True, label_type='p', recover_type="crossattn", res_dec=False, wavelength=3000):
         super(GRADUATE, self).__init__()
         
         dim_stft = 32
@@ -946,42 +946,179 @@ class GRADUATE(nn.Module):
         self.encoder_type = encoder_type
         
         # down-sample layer
-        if encoder_type == 'unet_conformer':
-            self.down_conv = nn.Sequential(nn.Conv1d(d_model, d_model*3, kernel_size=3, stride=2),
-                                           nn.BatchNorm1d(d_model*3),
-                                           nn.ReLU(),
-                                           nn.Conv1d(d_model*3, d_model*5, kernel_size=5, stride=3),
-                                           nn.BatchNorm1d(d_model*5),
-                                           nn.ReLU(),
-                                           nn.Conv1d(d_model*5, d_model*8, kernel_size=5, stride=3),
-                                           nn.BatchNorm1d(d_model*8),
-                                           nn.ReLU(),)
-            self.conformer = Conformer(subsample=False, num_classes=conformer_class, input_dim=d_model*8, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
-        else:
-            self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+        self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
         
         if seg_proj_type == 'crossattn':
-            self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
+            self.seg_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
             self.seg_crossattn = cross_attn(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class)
             self.seg_projector = nn.Linear(conformer_class, 1)
-        elif seg_proj_type == 'upsample':
-            self.upconv = nn.Sequential(nn.Upsample(1500),
-                                        nn.Conv1d(conformer_class, conformer_class, 3, padding='same'),
-                                        nn.ReLU(),
-                                        nn.Upsample(2000),
-                                        nn.Conv1d(conformer_class, conformer_class, 3, padding='same'),
-                                        nn.ReLU(),
-                                        nn.Upsample(2500),
-                                        nn.Conv1d(conformer_class, conformer_class, 5, padding='same'),
-                                        nn.ReLU(),
-                                        nn.Upsample(3000),
-                                        nn.Conv1d(conformer_class, conformer_class, 5, padding='same'),
-                                        nn.ReLU(),)
-            self.seg_projector = nn.Sequential(nn.Linear(conformer_class, conformer_class*3),
-                                               nn.ReLU(),
-                                               nn.Linear(conformer_class*3, conformer_class)) 
+        
+        self.sigmoid = nn.Sigmoid()
+        self.wavelength = wavelength
+
+        # =========================================== #
+        #               Cross-Attention               #
+        # =========================================== #
+        '''
+        cross_attn_type 
+        1) 先將 stft & encoded representation project 到相同長度，再去關注個時間點的頻率能量，最後再把 hidden state 
+            復原成原始資料長度做 decode。
+                cross_attn(cross_attn(stft, pos_emb), encoded_representation)  => output: (batch, 749, conformer_class)
+                
+        2) 分別將 encoded representation & stft 各自復原成原始長度後，再以原始長度大小去關注個時間點的頻率能量，最後再 decode。
+                cross_attn(cross_attn(stft, pos_emb), cross_attn(encoded_representation, pos_emb)) => output: (batch, 3000, conformer_class)
+                
+        3) Encoded representation 先經過原始方法 decode 完之後，再與原始長度的 stft 做 cross-attention，以此關注個時間點頻率能量。
+                cross_attn(decoder(cross_attn(encoded_representation, pos_emb)), cross_attn(stft, pos_emb)) => output: (batch, 3000, conformer_class)
+        '''
+        self.cross_attn_type = cross_attn_type
+        if cross_attn_type == 1:
+            self.stft_posEmb = PositionalEncoding(dim_stft, max_len=749, return_vec=True)
+            self.stft_rep_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
+            self.stft_pos_emb = cross_attn_layer(nhead, dim_stft//nhead, dim_stft//nhead, dim_stft, conformer_class, d_ffn)
+            self.stft_rep = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            
+        elif cross_attn_type == 2:
+            self.stft_posEmb = PositionalEncoding(dim_stft, max_len=wavelength, return_vec=True)
+            self.rep_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
+            self.stft_pos_emb = cross_attn_layer(nhead, dim_stft//nhead, dim_stft//nhead, dim_stft, conformer_class, d_ffn)
+            self.rep_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            
+        elif cross_attn_type == 3:
+            self.rep_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
+            self.stft_posEmb = PositionalEncoding(dim_stft, max_len=wavelength, return_vec=True)
+            self.stft_rep = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.stft_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, dim_stft, conformer_class, d_ffn)
+
+        # =========================================== #
+        #                   Decoder                   #
+        # =========================================== #    
+        self.decoder_type = decoder_type
+        
+        if decoder_type == 'crossattn':
+            self.decoder = nn.ModuleList([cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+                                                for _ in range(dec_layers)]
+                                                )
+        elif decoder_type == 'MGAN':
+            self.decoder = nn.ModuleList([MGAN(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn, norm_type, l)
+                                        for _ in range(dec_layers)])
+
+        # =========================================== #
+        #                    Output                   #
+        # =========================================== #
+        self.label_type = label_type
+        
+        if label_type == 'p':
+            self.output = nn.Linear(conformer_class, 1)
+            self.output_actfn = nn.Sigmoid()
+        elif label_type == 'other':
+            self.output = nn.Linear(conformer_class, 2)
+            self.output_actfn = nn.Softmax(dim=-1)
+        elif label_type == 'all':
+            self.output = nn.ModuleList([nn.Linear(conformer_class, 1) for _ in range(3)])
+            self.output_actfn = nn.Sigmoid()
+        
+    def forward(self, wave, stft):
+        # wave: (batch, 3000, 12)
+        wave = wave.permute(0,2,1)
+
+        out, _ = self.conformer(wave, self.wavelength)
+  
+        # temporal segmentation
+        if self.seg_proj_type == 'crossattn':
+            seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
+            seg_out = self.seg_projector(seg_crossattn_out)
+            seg_out = self.sigmoid(seg_out)
+        else:
+            seg_out = 0.0
+        
+        # cross_attention
+        if self.cross_attn_type == 1:
+            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            stft_rep_posEmb = self.stft_rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+
+            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+            stft_rep_out = self.stft_rep(stft_out, out, out) 
+            crossattn_out = self.crossattn(stft_rep_posEmb, stft_rep_out, stft_rep_out)
+
+        elif self.cross_attn_type == 2:
+            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+            rep_out = self.rep_pos_emb(rep_posEmb, out, out)
+            crossattn_out = self.crossattn(stft_out, rep_out, rep_out)
+            
+        elif self.cross_attn_type == 3:    
+            rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+
+            crossattn_out = self.crossattn(rep_posEmb, out, out)
+            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+        
+        # decoder
+        if self.decoder_type != 'None':
+            for i, layer in enumerate(self.decoder):
+                if i == 0:
+                    if self.rep_KV:
+                        dec_out = layer(crossattn_out, out, out)
+                    else:
+                        dec_out = layer(crossattn_out, crossattn_out, crossattn_out)
+                else:
+                    if self.rep_KV:
+                        dec_out = layer(dec_out, out, out)
+                    else:
+                        dec_out = layer(dec_out, dec_out, dec_out)
+        else:
+            dec_out = crossattn_out
+
+        if self.cross_attn_type == 3:
+            dec_out = self.stft_rep(stft_out, dec_out, dec_out)
+            
+        # output layer
+        if self.label_type == 'p' or self.label_type == 'other':
+            out = self.output_actfn(self.output(dec_out))
+        elif self.label_type == 'all':
+            out = []
+            # 0: detection, 1: P-pahse, 2: S-phase
+            for layer in self.output:
+                out.append(self.output_actfn(layer(dec_out)))
+        
+        return seg_out, out
+
+class GRADUATE_MAG(nn.Module):
+    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, 
+                 cross_attn_type, seg_proj_type='crossattn', encoder_type='conformer', decoder_type='crossattn', 
+                 rep_KV=True, label_type='all', res_dec=False):
+        super(GRADUATE_MAG, self).__init__()
+        
+        dim_stft = 32
+        
+        # =========================================== #
+        #                   Encoder                   #
+        # =========================================== #
+        # encoded representation 會當作 decoder's Key, Value
+        self.rep_KV = rep_KV
+        self.seg_proj_type = seg_proj_type
+        self.encoder_type = encoder_type
+        
+        # down-sample layer
+        self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+        
+        self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
+        self.seg_crossattn = cross_attn(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class)
+        self.seg_projector = nn.Linear(conformer_class, 1)
+        
         self.sigmoid = nn.Sigmoid()
         
+        # ResNet for project representation into time-domain
+        self.resnet = nn.ModuleList([nn.Sequential(nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                            nn.BatchNorm1d(conformer_class),
+                            nn.ReLU(),) for _ in range(5)])
+                            
         # =========================================== #
         #               Cross-Attention               #
         # =========================================== #
@@ -1018,45 +1155,6 @@ class GRADUATE(nn.Module):
             self.stft_rep = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
             self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
             self.stft_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, dim_stft, conformer_class, d_ffn)
-
-        self.recover_type = recover_type
-        if recover_type == 'upsample':
-            self.rep_upconv = nn.Sequential(nn.Upsample(scale_factor=2),
-                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
-                                       nn.BatchNorm1d(conformer_class),
-                                       nn.ReLU(),
-                                       nn.Upsample(scale_factor=2),
-                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
-                                       nn.BatchNorm1d(conformer_class),
-                                       nn.ReLU(),
-                                       nn.Upsample(scale_factor=2),
-                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
-                                       nn.BatchNorm1d(conformer_class),
-                                       nn.ReLU(),
-                                       nn.Upsample(scale_factor=2),
-                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
-                                       nn.BatchNorm1d(conformer_class),
-                                       nn.ReLU(),
-                                       nn.Upsample(3000),
-                                       nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
-                                       nn.BatchNorm1d(conformer_class),
-                                       nn.ReLU(),)
-            self.stft_upconv = nn.Sequential(nn.Upsample(scale_factor=2),
-                                            nn.Conv1d(dim_stft, dim_stft, kernel_size=3, padding='same'),
-                                            nn.BatchNorm1d(dim_stft),
-                                            nn.ReLU(),
-                                            nn.Upsample(scale_factor=2),
-                                            nn.Conv1d(dim_stft, dim_stft, kernel_size=3, padding='same'),
-                                            nn.BatchNorm1d(dim_stft),
-                                            nn.ReLU(),
-                                            nn.Upsample(scale_factor=2),
-                                            nn.Conv1d(dim_stft, conformer_class, kernel_size=3, padding='same'),
-                                            nn.BatchNorm1d(conformer_class),
-                                            nn.ReLU(),
-                                            nn.Upsample(3000),
-                                            nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
-                                            nn.BatchNorm1d(conformer_class),
-                                            nn.ReLU(),)
 
         # =========================================== #
         #                   Decoder                   #
@@ -1116,6 +1214,44 @@ class GRADUATE(nn.Module):
         elif decoder_type == 'residual_unet':
             self.decoder = Residual_Unet(conformer_class, nhead, d_ffn, dec_layers, res_dec)
 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #              Magnitude estimation             # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.mag_lstm = nn.LSTM(conformer_class, conformer_class, batch_first=True, bidirectional=True, dropout=0.1, num_layers=2)
+
+        self.fft_converter = nn.Sequential(nn.Conv1d(1, conformer_class//2, kernel_size=3, stride=2),
+                                          nn.BatchNorm1d(conformer_class//2),
+                                          nn.ReLU(),
+                                          nn.Conv1d(conformer_class//2, conformer_class, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(conformer_class),
+                                          nn.ReLU(),
+                                          nn.Conv1d(conformer_class, conformer_class*2, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(conformer_class*2),
+                                          nn.ReLU(),)
+        
+        self.mag_fft_crossattn = cross_attn_layer(nhead, conformer_class*2//nhead, conformer_class*2//nhead, 
+                                             conformer_class*2, conformer_class*2, d_ffn)
+
+        self.mag_selfattn = cross_attn_layer(nhead, conformer_class*2//nhead, conformer_class*2//nhead, 
+                                             conformer_class*2, conformer_class*2, d_ffn)
+
+        self.mag_out = nn.Sequential(nn.Conv1d(16, 8, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(8),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(8, 4, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(4),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(4, 2, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(2),
+                                      nn.MaxPool1d(2),
+                                      nn.ReLU(),
+                                      nn.Conv1d(2, 1, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(1),
+                                      nn.MaxPool1d(2),
+                                      nn.ReLU(),)
+                
         # =========================================== #
         #                    Output                   #
         # =========================================== #
@@ -1131,21 +1267,32 @@ class GRADUATE(nn.Module):
             self.output = nn.ModuleList([nn.Linear(conformer_class, 1) for _ in range(3)])
             self.output_actfn = nn.Sigmoid()
         
-    def forward(self, wave, stft):
+    def forward(self, wave, stft, fft):
         # wave: (batch, 3000, 12)
         wave = wave.permute(0,2,1)
 
         out, _ = self.conformer(wave, 3000)
-  
+        
+        # Magnitude estimation
+        fft_vector = self.fft_converter(fft)[:, :, 8:-8].permute(0,2,1)
+        mag_hidden_state, _ = self.mag_lstm(out)
+        mag_out = self.mag_fft_crossattn(fft_vector, mag_hidden_state, mag_hidden_state)
+        mag_out = self.mag_selfattn(mag_out, mag_out, mag_out)
+        mag_out = self.mag_out(mag_out.permute(0,2,1))
+
+        for idx, layer in enumerate(self.resnet):
+            if idx == 0:
+                bottleneck_out = layer(out.permute(0,2,1))
+            else:
+                bottleneck_out = layer(bottleneck_out) + bottleneck_out
+        out = bottleneck_out.permute(0,2,1)
+
         # temporal segmentation
         if self.seg_proj_type == 'crossattn':
             seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
             seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
             seg_out = self.seg_projector(seg_crossattn_out)
             seg_out = self.sigmoid(seg_out)
-        elif self.seg_proj_type == 'upsample':
-            seg_out = self.upconv(out.permute(0,2,1)).permute(0,2,1)
-            seg_out = self.sigmoid(self.seg_projector(seg_out))
         else:
             seg_out = 0.0
         
@@ -1159,14 +1306,10 @@ class GRADUATE(nn.Module):
             crossattn_out = self.crossattn(stft_rep_posEmb, stft_rep_out, stft_rep_out)
 
         elif self.cross_attn_type == 2:
-            if self.recover_type == 'upsample':
-                stft_out = self.stft_upconv(stft.permute(0,2,1)).permute(0,2,1)
-                rep_out = self.rep_upconv(out.permute(0,2,1)).permute(0,2,1)
-            else:
-                stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
-                rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
-                stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
-                rep_out = self.rep_pos_emb(rep_posEmb, out, out)
+            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+            rep_out = self.rep_pos_emb(rep_posEmb, out, out)
             crossattn_out = self.crossattn(stft_out, rep_out, rep_out)
             
         elif self.cross_attn_type == 3:    
@@ -1203,11 +1346,283 @@ class GRADUATE(nn.Module):
             out = self.output_actfn(self.output(dec_out))
         elif self.label_type == 'all':
             out = []
-            # 0: detection, 1: P-pahse, 2: S-phase
+            # 0: detection, 1: P-phase, 2: S-phase
             for layer in self.output:
                 out.append(self.output_actfn(layer(dec_out)))
         
-        return seg_out, out
+        return seg_out, out, mag_out
+
+class GRADUATE_MAG_deStationary(nn.Module):
+    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, 
+                 cross_attn_type, seg_proj_type='crossattn', encoder_type='conformer', decoder_type='crossattn', 
+                 rep_KV=True, label_type='p', recover_type="crossattn", res_dec=False):
+        super(GRADUATE_MAG_deStationary, self).__init__()
+        
+        dim_stft = 32
+        
+        # =========================================== #
+        #                   Encoder                   #
+        # =========================================== #
+        # encoded representation 會當作 decoder's Key, Value
+        self.rep_KV = rep_KV
+        self.seg_proj_type = seg_proj_type
+        self.encoder_type = encoder_type
+        
+        # down-sample layer
+        self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+        
+        self.seg_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
+        self.seg_crossattn = cross_attn(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class)
+        self.seg_projector = nn.Linear(conformer_class, 1)
+        
+        self.sigmoid = nn.Sigmoid()
+        
+        # ResNet for project representation into time-domain
+        self.resnet = nn.ModuleList([nn.Sequential(nn.Conv1d(conformer_class, conformer_class, kernel_size=3, padding='same'),
+                            nn.BatchNorm1d(conformer_class),
+                            nn.ReLU(),) for _ in range(5)])
+
+        # =========================================== #
+        #               Cross-Attention               #
+        # =========================================== #
+        '''
+        cross_attn_type 
+        1) 先將 stft & encoded representation project 到相同長度，再去關注個時間點的頻率能量，最後再把 hidden state 
+            復原成原始資料長度做 decode。
+                cross_attn(cross_attn(stft, pos_emb), encoded_representation)  => output: (batch, 749, conformer_class)
+                
+        2) 分別將 encoded representation & stft 各自復原成原始長度後，再以原始長度大小去關注個時間點的頻率能量，最後再 decode。
+                cross_attn(cross_attn(stft, pos_emb), cross_attn(encoded_representation, pos_emb)) => output: (batch, 3000, conformer_class)
+                
+        3) Encoded representation 先經過原始方法 decode 完之後，再與原始長度的 stft 做 cross-attention，以此關注個時間點頻率能量。
+                cross_attn(decoder(cross_attn(encoded_representation, pos_emb)), cross_attn(stft, pos_emb)) => output: (batch, 3000, conformer_class)
+        '''
+        self.cross_attn_type = cross_attn_type
+        if cross_attn_type == 1:
+            self.stft_posEmb = PositionalEncoding(dim_stft, max_len=749, return_vec=True)
+            self.stft_rep_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
+            self.stft_pos_emb = cross_attn_layer(nhead, dim_stft//nhead, dim_stft//nhead, dim_stft, conformer_class, d_ffn)
+            self.stft_rep = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            
+        elif cross_attn_type == 2:
+            self.stft_posEmb = PositionalEncoding(dim_stft, max_len=3000, return_vec=True)
+            self.rep_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
+            self.stft_pos_emb = cross_attn_layer(nhead, dim_stft//nhead, dim_stft//nhead, dim_stft, conformer_class, d_ffn)
+            self.rep_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            
+        elif cross_attn_type == 3:
+            self.rep_posEmb = PositionalEncoding(conformer_class, max_len=3000, return_vec=True)
+            self.stft_posEmb = PositionalEncoding(dim_stft, max_len=3000, return_vec=True)
+            self.stft_rep = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+            self.stft_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, dim_stft, conformer_class, d_ffn)
+
+        # =========================================== #
+        #                   Decoder                   #
+        # =========================================== #    
+        self.decoder_type = decoder_type
+        
+        if decoder_type == 'crossattn':
+            self.decoder = nn.ModuleList([cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+                                                for _ in range(dec_layers)]
+                                                )
+        elif decoder_type == 'MGAN':
+            self.decoder = nn.ModuleList([MGAN(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn, norm_type, l)
+                                        for _ in range(dec_layers)])
+        
+        elif decoder_type == 'unet':
+            self.down_decoder = nn.Sequential(nn.Conv1d(conformer_class, conformer_class*2, kernel_size=3, stride=2),
+                                    #    nn.BatchNorm1d(conformer_class*2),
+                                       nn.ReLU(),
+                                       nn.Dropout(0.1),
+                                       nn.Conv1d(conformer_class*2, conformer_class*3, kernel_size=5, stride=3),
+                                    #    nn.BatchNorm1d(conformer_class*3),
+                                       nn.ReLU(),
+                                       nn.Dropout(0.1),
+                                       nn.Conv1d(conformer_class*3, conformer_class*4, kernel_size=7, stride=3),
+                                    #    nn.BatchNorm1d(conformer_class*4),
+                                       nn.ReLU(),
+                                        nn.Dropout(0.1),
+                                       nn.Conv1d(conformer_class*4, conformer_class*5, kernel_size=9, stride=3),
+                                    #    nn.BatchNorm1d(conformer_class*5),
+                                       nn.ReLU(),
+                                       nn.Dropout(0.1),
+                                       )
+            self.decoder_layer = nn.TransformerEncoderLayer(d_model=conformer_class*5, nhead=nhead, dim_feedforward=d_ffn)
+            self.decoder = nn.TransformerEncoder(self.decoder_layer, num_layers=dec_layers)
+            
+            self.up_decoder = nn.Sequential(nn.Upsample(165),
+                                      nn.Conv1d(conformer_class*5, conformer_class*4, kernel_size=3, padding='same'),
+                                    #   nn.BatchNorm1d(conformer_class*4),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),
+                                      nn.Upsample(499),
+                                      nn.Conv1d(conformer_class*4, conformer_class*3, kernel_size=3, padding='same'),
+                                    #   nn.BatchNorm1d(conformer_class*3),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),
+                                      nn.Upsample(1499),
+                                      nn.Conv1d(conformer_class*3, conformer_class*2, kernel_size=5, padding='same'),
+                                    #   nn.BatchNorm1d(conformer_class*2),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),
+                                      nn.Upsample(3000),
+                                      nn.Conv1d(conformer_class*2, conformer_class*1, kernel_size=7, padding='same'),
+                                    #   nn.BatchNorm1d(conformer_class),
+                                      nn.ReLU(),
+                                      nn.Dropout(0.1),)
+            
+        elif decoder_type == 'residual_unet':
+            self.decoder = Residual_Unet(conformer_class, nhead, d_ffn, dec_layers, res_dec)
+
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        #              Magnitude estimation             # 
+        # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-= #
+        self.mag_std_scalar = ScalarProjector(output_dim=66)
+        self.mag_mean_scalar = ScalarProjector(output_dim=1)
+        self.mag_lstm = nn.LSTM(conformer_class, conformer_class, batch_first=True, bidirectional=True, dropout=0.1, num_layers=2)
+
+        self.fft_converter = nn.Sequential(nn.Conv1d(1, conformer_class//2, kernel_size=3, stride=2),
+                                          nn.BatchNorm1d(conformer_class//2),
+                                          nn.ReLU(),
+                                          nn.Conv1d(conformer_class//2, conformer_class, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(conformer_class),
+                                          nn.ReLU(),
+                                          nn.Conv1d(conformer_class, conformer_class*2, kernel_size=5, stride=3),
+                                          nn.BatchNorm1d(conformer_class*2),
+                                          nn.ReLU(),)
+        
+        self.mag_fft_crossattn = cross_attn_layer(nhead, conformer_class*2//nhead, conformer_class*2//nhead, 
+                                             conformer_class*2, conformer_class*2, d_ffn)
+
+        self.mag_selfattn = cross_attn_layer(nhead, conformer_class*2//nhead, conformer_class*2//nhead, 
+                                             conformer_class*2, conformer_class*2, d_ffn)
+
+        if d_model == 12:
+            self.mag_out = nn.Sequential(nn.Conv1d(16, 8, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(8),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(8, 4, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(4),
+                                      nn.MaxPool1d(3),
+                                      nn.ReLU(),
+                                      nn.Conv1d(4, 2, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(2),
+                                      nn.MaxPool1d(2),
+                                      nn.ReLU(),
+                                      nn.Conv1d(2, 1, kernel_size=3, padding='same'),
+                                      nn.BatchNorm1d(1),
+                                      nn.MaxPool1d(2),
+                                      nn.ReLU(),)
+        
+        # =========================================== #
+        #                    Output                   #
+        # =========================================== #
+        self.label_type = label_type
+        
+        if label_type == 'p':
+            self.output = nn.Linear(conformer_class, 1)
+            self.output_actfn = nn.Sigmoid()
+        elif label_type == 'other':
+            self.output = nn.Linear(conformer_class, 2)
+            self.output_actfn = nn.Softmax(dim=-1)
+        elif label_type == 'all':
+            self.output = nn.ModuleList([nn.Linear(conformer_class, 1) for _ in range(3)])
+            self.output_actfn = nn.Sigmoid()
+        
+    def forward(self, wave, stft, fft, mean_std=None):
+        # wave: (batch, 3000, 12)
+        wave = wave.permute(0,2,1)
+
+        out, _ = self.conformer(wave, 3000)
+        
+        # Magnitude estimation
+        # mean_std: (batch, 6)
+        mean, std = mean_std[:, :3], mean_std[:, 3:]
+
+        mean_scalar = self.mag_mean_scalar(wave[:, :, :3].permute(0,2,1), mean)
+        std_scalar = self.mag_std_scalar(wave[:, :, :3].permute(0,2,1), std)
+        
+        fft_vector = self.fft_converter(fft)[:, :, 8:-8].permute(0,2,1)
+        mag_hidden_state, _ = self.mag_lstm(out)
+        mag_out = self.mag_fft_crossattn(fft_vector, mag_hidden_state, mag_hidden_state)
+        mag_out = self.mag_selfattn(mag_out, mag_out, mag_out, mean=mean_scalar, std=std_scalar)
+        mag_out = self.mag_out(mag_out.permute(0,2,1))
+
+        for idx, layer in enumerate(self.resnet):
+            if idx == 0:
+                bottleneck_out = layer(out.permute(0,2,1))
+            else:
+                bottleneck_out = layer(bottleneck_out) + bottleneck_out
+        out = bottleneck_out.permute(0,2,1)
+
+        # temporal segmentation
+        if self.seg_proj_type == 'crossattn':
+            seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
+            seg_out = self.seg_projector(seg_crossattn_out)
+            seg_out = self.sigmoid(seg_out)
+        else:
+            seg_out = 0.0
+        
+        # cross_attention
+        if self.cross_attn_type == 1:
+            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            stft_rep_posEmb = self.stft_rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+
+            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+            stft_rep_out = self.stft_rep(stft_out, out, out) 
+            crossattn_out = self.crossattn(stft_rep_posEmb, stft_rep_out, stft_rep_out)
+
+        elif self.cross_attn_type == 2:
+            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+            rep_out = self.rep_pos_emb(rep_posEmb, out, out)
+            crossattn_out = self.crossattn(stft_out, rep_out, rep_out)
+            
+        elif self.cross_attn_type == 3:    
+            rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+
+            crossattn_out = self.crossattn(rep_posEmb, out, out)
+            stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+        
+        # decoder
+        if self.decoder_type == 'unet':
+            dec_tmp = self.down_decoder(crossattn_out.permute(0,2,1)).permute(0,2,1)
+            dec_out = self.up_decoder(self.decoder(dec_tmp).permute(0,2,1)).permute(0,2,1)
+        elif self.decoder_type == 'residual_unet':
+            dec_out = self.decoder(crossattn_out.permute(0,2,1)).permute(0,2,1)
+        else:
+            for i, layer in enumerate(self.decoder):
+                if i == 0:
+                    if self.rep_KV:
+                        dec_out = layer(crossattn_out, out, out)
+                    else:
+                        dec_out = layer(crossattn_out, crossattn_out, crossattn_out)
+                else:
+                    if self.rep_KV:
+                        dec_out = layer(dec_out, out, out)
+                    else:
+                        dec_out = layer(dec_out, dec_out, dec_out)
+        
+        if self.cross_attn_type == 3:
+            dec_out = self.stft_rep(stft_out, dec_out, dec_out)
+            
+        # output layer
+        if self.label_type == 'p' or self.label_type == 'other':
+            out = self.output_actfn(self.output(dec_out))
+        elif self.label_type == 'all':
+            out = []
+            # 0: detection, 1: P-phase, 2: S-phase
+            for layer in self.output:
+                out.append(self.output_actfn(layer(dec_out)))
+        
+        return seg_out, out, mag_out
 
 class REAL_GRADUATE(nn.Module):
     def __init__(self, d_model=12, conformer_class=16, d_ffn=64, n_head=2, enc_layers=2, wave_length=3000):

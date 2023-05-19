@@ -6,13 +6,14 @@ import random
 import glob
 from tqdm import tqdm
 from torch.utils.data.dataset import Dataset
-
+import time
 import sys
 sys.path.append('/mnt/disk4/weiwei/picking_baseline/TemporalSegmentation/')
 from TopDown_optimized import *
 
 sys.path.append('/mnt/disk4/weiwei/RED-PAN/')
 from gen_tar import *
+import matplotlib.pyplot as plt
 
 class REDPAN_dataset(Dataset):
     def __init__(self, basedir, option, samp_ratio, model_opt, load_to_ram=False):
@@ -68,26 +69,58 @@ class REDPAN_dataset(Dataset):
         # preload to RAM
         self.load_to_ram = load_to_ram
         if load_to_ram:
-            print('load to RAM...')
-            self.trc_data, self.psn, self.mask = [], [], []
-            cnt = 0
-            n_sample = len(self.datalist) * samp_ratio
-            for f in tqdm(self.datalist, total=len(self.datalist)):
-                data = torch.load(f.strip())
-                trc_data, psn, mask = data['trc_data'], data['psn'], data['mask']
+            if option == 'val':
+                option = 'dev'
 
-                self.trc_data.append(trc_data)
-                self.psn.append(psn)
-                self.mask.append(mask)
-                cnt += 1
-                if cnt >= n_sample:
-                    break
+            print('load to RAM...')
+            basedir = os.path.join(basedir, 'preload_pt')
+            files = os.listdir(basedir)
+
+            wf, psn, mask = [], [], []
+            for f in files:
+                tmp = f.split('_')
+                if tmp[0] == option:
+                    if tmp[1] == 'wf':
+                        wf.append(f)
+                    elif tmp[1] == 'psn':
+                        psn.append(f)
+                    elif tmp[1] == 'mask': 
+                        mask.append(f)
+
+            wf.sort()
+            psn.sort()
+            mask.sort()
+
+            toLoad_idx = np.arange(len(wf))
+            np.random.shuffle(toLoad_idx)
+            if option == 'train':
+                total_len = len(toLoad_idx) * samp_ratio
+                total_len = int(round(total_len))
+                toLoad_idx = toLoad_idx[:total_len]
+
+            toLoad_wf, toLoad_psn, toLoad_mask = [], [], []
+            for idx in tqdm(toLoad_idx, total=len(toLoad_idx)):
+                toLoad_wf.append(torch.load(os.path.join(basedir, wf[idx])))
+                toLoad_psn.append(torch.load(os.path.join(basedir, psn[idx])))
+                toLoad_mask.append(torch.load(os.path.join(basedir, mask[idx])))
+            
+            self.total_wf = torch.stack(toLoad_wf).view(-1, 3, 3000)
+            self.total_psn = torch.stack(toLoad_psn).view(-1, 3, 3000)
+            self.total_mask = torch.stack(toLoad_mask).view(-1, 2, 3000)
+           
+            del toLoad_wf, toLoad_psn, toLoad_mask
 
         if samp_ratio < 1:
-            self.idx = random.sample(range(len(self.datalist)), k=int(samp_ratio*len(self.datalist)))
+            if not load_to_ram:
+                self.idx = random.sample(range(len(self.datalist)), k=int(samp_ratio*len(self.datalist)))
+            else:
+                self.idx = np.arange(self.total_wf.shape[0])
         else:
-            self.idx = np.arange(len(self.datalist))
-            
+            if not load_to_ram:
+                self.idx = np.arange(len(self.datalist))
+            else:
+                self.idx = np.arange(self.total_wf.shape[0])
+
         self.len = len(self.idx)
 
         # filter-related parameters
@@ -105,18 +138,27 @@ class REDPAN_dataset(Dataset):
         '''
 
         if self.load_to_ram:
-            trc_data, psn, mask = self.trc_data[self.idx[index]], self.psn[self.idx[index]], self.mask[self.idx[index]]
+            trc_data, psn, mask = self.total_wf[self.idx[index]], self.total_psn[self.idx[index]], self.total_mask[self.idx[index]]
         else:
             # load data from disk
             data = torch.load(self.datalist[self.idx[index]].strip())
             trc_data, psn, mask = data['trc_data'], data['psn'], data['mask']
-            
+        
+        # plt.subplot(311)
+        # plt.plot(trc_data.T)
+        # plt.subplot(312)
+        # plt.plot(psn.T)
+        # plt.subplot(313)
+        # plt.plot(mask.T)
+        # plt.savefig(f"./tmp/{time.time()}.png")
+        # plt.clf()
+
         # zscore
         # trc_data = self._zscore(trc_data)
 
         # filter
-        # trc_data = self._filter(trc_data)
-
+        trc_data = self._filter(trc_data)
+       
         # Characteristic, STA, LTA
         if self.model_opt == 'conformer' or self.model_opt == 'GRADUATE':
             trc_data = self._CharStaLta(trc_data)
@@ -131,7 +173,8 @@ class REDPAN_dataset(Dataset):
         if self.model_opt == 'GRADUATE':
             return (trc_data, psn, mask, stft, seg)
         else:
-            return (torch.FloatTensor(trc_data), torch.FloatTensor(psn), torch.FloatTensor(mask))
+            return (trc_data, psn, mask)
+            # return (torch.FloatTensor(trc_data), torch.FloatTensor(psn), torch.FloatTensor(mask))
 
     def __len__(self):
         return self.len

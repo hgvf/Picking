@@ -187,7 +187,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
         if test:
             if opt.dataset_opt == 'stead':
                 augmentations = [
-                    sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
                     sbg.ChangeDtype(np.float32),
@@ -196,7 +196,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 ]
             else:
                 augmentations = [
-                    sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
                     sbg.VtoA(),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
@@ -546,6 +546,99 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
         
         if opt.label_type == 'all':
             augmentations.append(sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4))
+    elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
+        p_phases = 'trace_p_arrival_sample'
+        s_phases = 'trace_s_arrival_sample'
+        
+        if opt.label_type == 'all':
+            phase_dict = [p_phases, s_phases]
+        else:
+            phase_dict = [p_phases]
+
+        if test:
+            augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
+            ]
+            if opt.model_opt == 'GRADUATE_MAG':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),)
+            elif opt.model_opt == 'GRADUATE_MAG_deStationary':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_mean_std=True))
+            else:
+                augmentations.append(sbg.Normalize(demean_axis=-1, keep_ori=True),)
+
+            if not opt.dataset_opt == 'stead':
+                augmentations.append(sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),)
+            augmentations += [sbg.STFT(),
+                              sbg.FFT(),
+                              sbg.Magnitude(),
+                            ]
+            if opt.model_opt == 'GRADUATE_MAG24':
+                augmentations.append(sbg.CharStaLta(train=True))
+            else:
+                augmentations.append(sbg.CharStaLta())
+
+            augmentations += [sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                              sbg.ChangeDtype(np.float32),
+                              sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
+                             ]
+        elif EEW:
+            augmentations = [
+                sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
+                sbg.VtoA(),
+            ]
+            if opt.model_opt == 'GRADUATE_MAG':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),)
+            elif opt.model_opt == 'GRADUATE_MAG24':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),)
+            elif opt.model_opt == 'GRADUATE_MAG_deStationary':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_mean_std=True))
+            else:
+                augmentations.append(sbg.Normalize(demean_axis=-1),)
+
+            augmentation += [
+                                sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
+                                sbg.STFT(),
+                                sbg.FFT(),
+                                sbg.Magnitude(),
+                                sbg.CharStaLta(),
+                                sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                                sbg.ChangeDtype(np.float32),
+                                sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
+                            ]
+        else:
+            augmentations = [
+                    sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
+                    sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
+            ]
+            if opt.model_opt == 'GRADUATE_MAG':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),)
+            elif opt.model_opt == 'GRADUATE_MAG24':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),)
+            elif opt.model_opt == 'GRADUATE_MAG_deStationary':
+                augmentations.append(sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_mean_std=True))
+            else:
+                augmentations.append(sbg.Normalize(demean_axis=-1),)
+
+            if not opt.dataset_opt == 'stead':
+                augmentations.append(sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),)
+            augmentations += [sbg.STFT(),
+                              sbg.FFT(),
+                              sbg.Magnitude(),
+                            ]
+            if opt.model_opt == 'GRADUATE_MAG24':
+                augmentations.append(sbg.CharStaLta(train=True))
+            else:
+                augmentations.append(sbg.CharStaLta())
+
+            augmentations += [sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
+                              sbg.ChangeDtype(np.float32),
+                              sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
+                             ]
+        
+        if opt.label_type == 'all':
+            augmentations.append(sbg.DetectionLabeller(p_phases, s_phases, key=("X", "detections"), factor=1.4))
     elif opt.model_opt == 'real_GRADUATE':
         p_phases = 'trace_p_arrival_sample'
         s_phases = 'trace_s_arrival_sample'
@@ -592,6 +685,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.STFT(),
                 sbg.FFT(),
+                sbg.Magnitude(),
                 sbg.CharStaLta(),
                 sbg.TemporalSegmentation(n_segmentation=opt.n_segmentation),
                 sbg.ChangeDtype(np.float32),
@@ -800,6 +894,18 @@ def load_model(opt, device):
         model = REAL_GRADUATE_noNorm(d_model=opt.d_model, conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers)
     elif opt.model_opt == 'real_GRADUATE_noNorm_double':
         model = REAL_GRADUATE_doubleWave(d_model=opt.d_model, conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers)
+    elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' or opt.model_opt == 'GRADUATE_MAG24':
+        rep_KV = True if opt.rep_KV == 'True' else False
+        model = GRADUATE_MAG(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, 
+                    encoder_type=opt.encoder_type, dec_layers=opt.dec_layers, cross_attn_type=opt.cross_attn_type, 
+                    decoder_type=opt.decoder_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type,
+                    label_type=opt.label_type, res_dec=opt.res_dec)
+    elif opt.model_opt == 'GRADUATE_MAG_deStationary':
+        rep_KV = True if opt.rep_KV == 'True' else False
+        model = GRADUATE_MAG_deStationary(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, nhead=opt.nhead, d_model=opt.d_model, enc_layers=opt.enc_layers, 
+                    encoder_type=opt.encoder_type, dec_layers=opt.dec_layers, cross_attn_type=opt.cross_attn_type, 
+                    decoder_type=opt.decoder_type, rep_KV=rep_KV, seg_proj_type=opt.seg_proj_type,
+                    label_type=opt.label_type, res_dec=opt.res_dec)
     elif opt.model_opt == 'tsfc':
         model = TSFC_Unet(isConformer=opt.isConformer)
     elif opt.model_opt == 'eqt':
@@ -836,8 +942,8 @@ def load_model(opt, device):
     elif opt.model_opt == 'anticopy_conformer':
         model = AntiCopy_Conformer(conformer_class=opt.conformer_class, d_ffn=opt.d_ffn, n_head=opt.nhead, enc_layers=opt.enc_layers, dec_layers=opt.dec_layers, d_model=opt.d_model, encoder_type=opt.encoder_type, decoder_type=opt.decoder_type, norm_type=opt.MGAN_normtype, l=opt.MGAN_l)
     elif opt.model_opt == 'RED_PAN':
-        # model = RED_PAN().double()
-        model = RED_PAN()
+        model = RED_PAN().double()
+        # model = RED_PAN()
         # model = mtan_R2unet().double()
     elif opt.model_opt == 'GRADUATE':
         rep_KV = True if opt.rep_KV == 'True' else False
@@ -1056,8 +1162,8 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
         #     else:
         #         PS_loss += F.binary_cross_entropy(weight=weights.detach(), input=pred_PS[:, i], target=gt_PS[:, i].type(torch.DoubleTensor).to(device))
             # PS_loss += F.binary_cross_entropy(input=pred_PS[:, i], target=gt_PS[:, i].to(device))
-        PS_loss = (-pred_PS.log() * gt_PS.to(device)).sum(dim=(1, 2)).mean()
 
+        PS_loss = (-pred_PS.log() * gt_PS.to(device)).sum(dim=(1, 2)).mean()
 
         # weights = torch.ones(pred_M.shape[0], 3000).to(device)                
         # for i in range(2):
@@ -1068,7 +1174,8 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
         #         M_loss += F.binary_cross_entropy(weight=tmp.detach(), input=pred_M[:, i], target=gt_M[:, i].type(torch.DoubleTensor).to(device))
         #     else:
         #         M_loss += F.binary_cross_entropy(weight=weights.detach(), input=pred_M[:, i], target=gt_M[:, i].type(torch.DoubleTensor).to(device))
-        #     # M_loss += F.binary_cross_entropy(input=pred_M[:, i], target=gt_M[:, i].to(device))
+            # M_loss += F.binary_cross_entropy(input=pred_M[:, i], target=gt_M[:, i].to(device))
+
         M_loss = (-pred_M.log() * gt_M.to(device)).sum(dim=(1, 2)).mean()
 
         loss = DWA(task1_loss, task2_loss, cur_epoch, PS_loss, M_loss)
@@ -1076,7 +1183,7 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
         return loss, PS_loss, M_loss
     elif opt.model_opt == 'GRADUATE':
         pred_seg, pred_picking = pred
-        reduction = 'sum'
+        reduction = 'mean'
 
         # ======================== Picking ======================= #
         if opt.label_type == 'p':
@@ -1116,13 +1223,85 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
             # temporal segmentation loss
             # prediction: (batch, wavelength, 1)
             # ground-truth: (batch, wavelength)
+
+            loss_weights = [0.65, 0.32]
             weights = torch.add(torch.mul(gt_seg, opt.loss_weight), 1).to(device)
-            segmentation_loss = F.binary_cross_entropy(input=pred_seg[:, :, 0], target=gt_seg.type(torch.FloatTensor).to(device), weight=weights, reduction=reduction)
+            seg_bce_loss = F.binary_cross_entropy(input=pred_seg[:, :, 0], target=gt_seg.type(torch.FloatTensor).to(device), weight=weights, reduction=reduction)
+            
+            n_seg = torch.FloatTensor([l.count(1) for l in gt_seg.tolist()]).unsqueeze(-1)
+            n_seg = n_seg.repeat(1, 3000).to(device)
+            seg_quantized_loss = F.l1_loss(input=pred_seg[:, :, 0], target=n_seg)
+
+            segmentation_loss = loss_weights[0] * seg_bce_loss + loss_weights[1] * seg_quantized_loss
             # print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
 
             loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss
         else:
             loss = picking_loss
+    elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
+        pred_seg, pred_picking, pred_mag = pred
+
+        reduction = 'mean'
+
+        # ======================== Picking ======================= #
+        if opt.label_type == 'p':
+            weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
+            picking_loss = F.binary_cross_entropy(weight=weights, input=pred_picking[:, :, 0].to(device), target=gt_picking[:, 0].type(torch.FloatTensor).to(device), reduction=reduction)
+        elif opt.label_type == 'other':
+            picking_loss = 0.0
+            weights = torch.add(torch.mul(gt_picking[:, 0], opt.loss_weight), 1).to(device)
+            for i in range(2):
+                picking_loss += F.binary_cross_entropy(weight=weights, input=pred_picking[:, :, i].squeeze().to(device), target=gt_picking[:, i].type(torch.FloatTensor).to(device), reduction=reduction)
+        elif opt.label_type == 'all':
+            pred_detection, pred_p, pred_s = pred_picking
+
+            pred = [pred_p, pred_s]
+            gt_seg, gt_picking, gt_detection, gt_mag, distance = gt
+
+            loss_weight = [0.6, 0.35, 0.05]       # P, S, detection
+        
+            # ground-truth -> 0: P-phase, 1: S-phase, 2: other label
+            # detection
+            # prediction -> 0: detection, 1: P-phase picking, 2: S-phase picking
+            picking_loss = 0.0
+            for i in range(3):
+                if i == 0 or i == 1:
+                    weights = torch.add(torch.mul(gt_picking[:, i], opt.loss_weight*4), 1).to(device)
+                    picking_loss += loss_weight[i] * F.binary_cross_entropy(weight=weights.to(device), input=pred[i].squeeze().to(device), target=gt_picking[:, i].type(torch.FloatTensor).to(device), reduction=reduction)
+                else:
+                    weights = torch.add(torch.mul(gt_detection[:, 0], opt.loss_weight*4), 1).to(device)
+                    picking_loss += loss_weight[i] * F.binary_cross_entropy(weight=weights.to(device), input=pred_detection.squeeze().to(device), target=gt_detection[:, 0].type(torch.FloatTensor).to(device), reduction=reduction)
+
+        # ====================== Temporal segmentation ======================== #
+        if opt.seg_proj_type != 'none':
+            # temporal segmentation loss
+            # prediction: (batch, wavelength, 1)
+            # ground-truth: (batch, wavelength)
+            weights = torch.add(torch.mul(gt_seg, opt.loss_weight*4), 1).to(device)
+            segmentation_loss = F.binary_cross_entropy(input=pred_seg[:, :, 0], target=gt_seg.type(torch.FloatTensor).to(device), weight=weights, reduction=reduction)
+            # print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
+        else:
+            segmentation_loss = 0.0
+
+        # ====================== Magnitude estimation ======================== #
+        weights = torch.max(gt_mag, dim=1).values
+        # weights[weights==0] = -2
+        # mag_gt[mag_gt==0] = -2
+        
+        gt_mag = weights.clone()
+        weights = weights * opt.loss_weight
+        weights[weights==0] = 1
+        distance_mask = distance.clone()
+        distance_mask[distance_mask <= 110] = 1
+        distance_mask[distance_mask > 110] = 0
+        
+        tmp_loss = F.l1_loss(input=pred_mag.squeeze(), target=gt_mag.type(torch.FloatTensor).to(device), reduction='none')
+        magnitude_loss = (tmp_loss * weights.to(device) * distance_mask.to(device)).mean()
+
+        loss = opt.segmentation_ratio * segmentation_loss + opt.magnitude_ratio * magnitude_loss + (1-opt.segmentation_ratio-opt.magnitude_ratio) * picking_loss
+        # print(f"mag_gt: {gt_mag}\nmag_pred: {pred_mag[:, 0, 0]}")
+        # print(f"segmentation: {segmentation_loss}, 'magnitude: {magnitude_loss}, picking: {picking_loss}")
+
     elif opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'real_GRADUATE_noNorm' or opt.model_opt == 'real_GRADUATE_noNorm_double':
         pred_seg, pred_mag, pred_picking = pred
         seg_gt, mag_gt, picking_gt, detection_gt, distance = gt

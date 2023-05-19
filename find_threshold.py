@@ -6,6 +6,7 @@ import math
 import logging
 import pickle
 import json
+import time
 import bisect
 import requests
 from tqdm import tqdm
@@ -46,6 +47,7 @@ def parse_args():
     parser.add_argument('--do_test', type=bool, default=False)
     parser.add_argument('--p_timestep', type=int, default=750)
     parser.add_argument('--allTest', type=bool, default=False)
+    parser.add_argument('--s_test', type=bool, default=False)
 
     # dataset hyperparameters
     parser.add_argument('--workers', type=int, default=1)
@@ -60,6 +62,9 @@ def parse_args():
     parser.add_argument('--EEW_allTest', type=bool, default=False)
     parser.add_argument("--device", type=str, default='cpu')
     parser.add_argument("--batch_size", type=int, default=100)
+
+    # REDPAN dataset
+    parser.add_argument('--load_to_ram', type=bool, default=False)
 
     # seisbench options
     parser.add_argument('--model_opt', type=str, default='none')
@@ -167,7 +172,7 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
         else:
             snr_cur = snr_idx[i]
             intensity_cur = intensity_idx[i]
-
+        
         if not np.all(gt[i] == 0):
             gt_isTrigger = True            
             gt_trigger = np.argmax(gt[i])
@@ -391,7 +396,6 @@ def inference(opt, model, test_loader, device):
     isREDPAN = True if opt.model_opt == 'RED_PAN' else False
 
     model.eval()
-    idx = 0
     with tqdm(test_loader) as epoch:
         for data in epoch:          
             if not opt.dataset_opt == 'REDPAN_dataset':
@@ -403,9 +407,21 @@ def inference(opt, model, test_loader, device):
                     if opt.model_opt == 'RED_PAN':
                         wf, psn, mask = data
                         out_PS, out_M = model(wf.to(device))
+                        
+                        for i in range(wf.shape[0]):
+                            plt.subplot(311)
+                            plt.plot(wf[i].T)
+                            plt.subplot(312)
+                            plt.plot(out_PS[i, 0].detach().cpu().numpy())
+                            plt.subplot(313)
+                            plt.plot(psn[i, 0].numpy())
+                            plt.savefig(f'./tmp/{i}.png')
+                            plt.clf()
+
 
                         pred += [out_PS[i, 0].detach().squeeze().cpu().numpy() for i in range(out_PS.shape[0])]
-                        gt += [psn[i, 0] for i in range(wf.shape[0])]
+                        gt += [psn[i, 0].numpy() for i in range(wf.shape[0])]
+                        break
                     elif opt.model_opt == 'conformer':
                         wf, psn, mask = data
                         out = model(wf.to(device))
@@ -426,6 +442,15 @@ def inference(opt, model, test_loader, device):
                         elif opt.label_type == 'p':
                             pred += [out[i].detach().squeeze().cpu().numpy() for i in range(out.shape[0])]
                             gt += [psn[i, 0] for i in range(wf.shape[0])]
+                    else:
+                        wf, psn, mask = data
+                        out = model(wf.float().to(device))
+
+                        out = out[1].detach().squeeze().cpu().numpy()
+                       
+                        pred += [out[i] for i in range(out.shape[0])]
+                        gt += [psn[i, 0].numpy() for i in range(wf.shape[0])]
+                        
                 else:
                     if opt.model_opt == 'basicphaseAE':
                         out = sliding_prediction(opt, model, data)
@@ -446,6 +471,13 @@ def inference(opt, model, test_loader, device):
                             out = model(data['X'].to(device), stft=data['stft'].to(device).float())
                         elif opt.model_opt == 'GRADUATE':
                             _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm':
+                            _, out, out_mag = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
+                        elif opt.model_opt == 'GRADUATE_MAG_deStationary':
+                            _, out, out_mag = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device), mean_std=data['mean_std'].float().to(device))
+                        elif opt.model_opt == 'GRADUATE_MAG24':
+                            wf = torch.cat((data['X'], data['ori_X']), dim=1)
+                            _, out, out_mag = model(wf.to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
                         elif opt.model_opt == 'tsfc':
                             _, out_mag, out = model(data['X'][:, :3].to(device), stft=data['stft'].float().to(device))
                         elif opt.model_opt == 'real_GRADUATE':
@@ -454,7 +486,10 @@ def inference(opt, model, test_loader, device):
                             out = model(data['X'].to(device))
 
                         if opt.model_opt == 'eqt':
-                            out = out[1].detach().squeeze().cpu().numpy()
+                            if not opt.s_test:
+                                out = out[1].detach().squeeze().cpu().numpy()
+                            else:
+                                out = out[2].detach().squeeze().cpu().numpy()
                         elif opt.model_opt == 'phaseNet':
                             out = out[:, 0].detach().squeeze().cpu().numpy()
                         elif opt.model_opt == 'tsfc':
@@ -471,12 +506,29 @@ def inference(opt, model, test_loader, device):
                             for i in range(out_mag.shape[0]):
                                 mag.append((gt_mag[i], out_mag[i, 0, 0]))
                                 dis.append(data['dis'][i].item())
+                        elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
+                            if opt.label_type == 'p':
+                                out = out.detach().squeeze().cpu().numpy()
+                            elif opt.label_type == 'other':
+                                out = out[:, :, 0].detach().squeeze().cpu().numpy()      
+                            else:
+                                out = out[1].detach().squeeze().cpu().numpy()
+
+                            gt_mag = torch.max(data['mag'], dim=1).values
+                            for i in range(out_mag.shape[0]):
+                                mag.append((gt_mag[i], out_mag[i, 0, 0]))
+                                dis.append(data['dis'][i].item())
                         else:
                             if opt.label_type == 'p':
                                 out = out.detach().squeeze().cpu().numpy()
                             elif opt.label_type == 'other':
                                 out = out[:, :, 0].detach().squeeze().cpu().numpy()                
-                   
+                            elif opt.label_type == 'all':
+                                if not opt.s_test:
+                                    out = out[1].squeeze().detach().cpu().numpy()
+                                else:
+                                    out = out[2].squeeze().detach().cpu().numpy()
+
                         # plt.subplot(311)
                         # plt.plot(data['X'][0, :3].T)
                         # plt.subplot(312)
@@ -486,15 +538,20 @@ def inference(opt, model, test_loader, device):
                         # plt.savefig(f"./tmp/{idx}.png")
                         # plt.clf()
 
-                        target = data['y'][:, 0].squeeze().numpy()
+                        if not opt.s_test:
+                            target = data['y'][:, 0].squeeze().numpy()
+                        else:
+                            target = data['y'][:, 1].squeeze().numpy()
                         
-                        if out.ndim == 2:
+                        if type(out) == list:
+                            pass
+                        elif out.ndim == 2:
                             pred += [out[i] for i in range(out.shape[0])]
                             gt += [target[i] for i in range(target.shape[0])]
                         else:
                             pred += [out]
                             gt += [target]
-            
+    
     return pred, gt, snr_total, intensity_total, mag, dis
 
 def score(pred, gt, snr_total, intensity_total, mode, opt, threshold_prob, threshold_trigger, isTest=False):
@@ -593,6 +650,11 @@ if __name__ == '__main__':
         subpath = subpath + '_' + str(opt.p_timestep)
     if opt.allTest:
         subpath = subpath + '_allCase_testing_' + str(opt.level)
+    if opt.load_specific_model != 'None':
+        subpath = subpath + '_' + opt.load_specific_model
+    if opt.s_test:
+        subpath = subpath + '_Swave'
+
     subpath = subpath + '.log'
     print('logpath: ', subpath)
     log_path = os.path.join(output_dir, subpath)
@@ -617,7 +679,8 @@ if __name__ == '__main__':
         else:
             basedir = '/mnt/disk4/weiwei/seismic_datasets/REDPAN_30S_pt/'
             if opt.model_opt == 'RED_PAN' or opt.model_opt == 'eqt':
-                dev_set, test_set = REDPAN_dataset(basedir, 'val', 1.0, 'REDPAN'), REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
+                dev_set = REDPAN_dataset(basedir, 'val', 1.0, opt.model_opt, load_to_ram=opt.load_to_ram)
+                test_set = REDPAN_dataset(basedir, 'test', 1.0, opt.model_opt, load_to_ram=opt.load_to_ram)
             else:
                 dev_set, test_set = REDPAN_dataset(basedir, 'val', 1.0, 'REDPAN'), REDPAN_dataset(basedir, 'test', 1.0, 'REDPAN')
             
@@ -670,8 +733,11 @@ if __name__ == '__main__':
         print('finding best criteria...')
         pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, dev_loader, device)
 
-        if opt.model_opt == 'real_GRADUATE':
+        if opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' \
+            or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
             mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+
+            print(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
 
             with open(os.path.join(output_dir, 'mag_pred.pkl'), 'wb') as f:
                 pickle.dump(mag_pred, f)
@@ -705,7 +771,7 @@ if __name__ == '__main__':
                     else:
                         cnt += 1
 
-                    if cnt == 2 or fscore == 0.0:
+                    if cnt == 1 or fscore == 0.0:
                         break
 
                     if fscore > best_fscore:
@@ -747,8 +813,11 @@ if __name__ == '__main__':
 
         logging.info('Inference on testing set')
         pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, test_loader, device)
-        if opt.model_opt == 'real_GRADUATE':
+        if opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' \
+            or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
             mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+
+            print(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
 
             with open(os.path.join(output_dir, 'test_mag_pred.pkl'), 'wb') as f:
                 pickle.dump(mag_pred, f)
@@ -761,7 +830,8 @@ if __name__ == '__main__':
 
         fscore, abs_diff, diff, snr_stat, intensity_stat, case_stat = score(pred, gt, snr_total, intensity_total, best_mode, opt, best_prob, best_trigger, True)
         print('fscore: %.4f' %(fscore))
-        if opt.model_opt == 'real_GRADUATE':
+        if opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' \
+            or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
             logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
 
         with open(os.path.join(output_dir, 'test_abs_diff_'+str(opt.level)+'.pkl'), 'wb') as f:
@@ -809,8 +879,10 @@ if __name__ == '__main__':
             logging.info('======================================================')
             logging.info('Inference on testing set, ptime: %d' %(ptime))
             pred, gt, snr_total, intensity_total, mag, dis = inference(opt, model, test_loader, device)
-            if opt.model_opt == 'real_GRADUATE':
+            if opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' \
+                or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
                 mag_abs_diff, mag_diff, mag_pred, mag_gt, dis_mag = mag_score(mag, dis)
+                
                 logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
 
                 with open(os.path.join(new_output_dir, 'test_mag_pred.pkl'), 'wb') as f:
