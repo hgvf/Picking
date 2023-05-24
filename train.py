@@ -192,7 +192,7 @@ def eqt_init_lr(epoch, optimizer, scheduler):
 def split_dataset(opt, return_dataset=False):
     # load datasets
     print('loading datasets')
-    cwbsn, tsmip, stead, cwbsn_noise = load_dataset(opt)
+    cwbsn, tsmip, stead, cwbsn_noise, instance = load_dataset(opt)
 
     # split datasets
     if opt.dataset_opt == 'all':
@@ -240,6 +240,8 @@ def split_dataset(opt, return_dataset=False):
 
         train = cwbsn_train + tsmip_train + stead_train
         dev = cwbsn_dev + tsmip_dev + stead_dev
+    elif opt.dataset_opt == 'instance':
+        train, dev, _ = instance.train_dev_test()
 
     print(f'total traces -> train: {len(train)}, dev: {len(dev)}')
 

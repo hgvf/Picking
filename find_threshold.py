@@ -262,7 +262,7 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
     return tp, fp, tn, fn, diff, abs_diff, res, snr_stat, intensity_stat, case_stat
 
 def set_generators(opt, ptime=None):
-    cwbsn, tsmip, stead, cwbsn_noise = load_dataset(opt)
+    cwbsn, tsmip, stead, cwbsn_noise, instance = load_dataset(opt)
 
     # split datasets
     if opt.dataset_opt == 'all':
@@ -289,6 +289,8 @@ def set_generators(opt, ptime=None):
         # test = tsmip_test + stead_test
     elif opt.dataset_opt == 'stead':
         _, dev, test = stead.train_dev_test()
+    elif opt.dataset_opt == 'instance':
+        _, dev, test = instance.train_dev_test()
     elif opt.dataset_opt == 'redpan' or opt.dataset_opt == 'taiwan':
         cwbsn_dev, cwbsn_test = cwbsn.dev(), cwbsn.test()
         tsmip_dev, tsmip_test = tsmip.dev(), tsmip.test()
@@ -408,20 +410,20 @@ def inference(opt, model, test_loader, device):
                         wf, psn, mask = data
                         out_PS, out_M = model(wf.to(device))
                         
-                        for i in range(wf.shape[0]):
-                            plt.subplot(311)
-                            plt.plot(wf[i].T)
-                            plt.subplot(312)
-                            plt.plot(out_PS[i, 0].detach().cpu().numpy())
-                            plt.subplot(313)
-                            plt.plot(psn[i, 0].numpy())
-                            plt.savefig(f'./tmp/{i}.png')
-                            plt.clf()
+                        # for i in range(wf.shape[0]):
+                        #     plt.subplot(311)
+                        #     plt.plot(wf[i].T)
+                        #     plt.subplot(312)
+                        #     plt.plot(out_PS[i, 0].detach().cpu().numpy())
+                        #     plt.subplot(313)
+                        #     plt.plot(psn[i, 0].numpy())
+                        #     plt.savefig(f'./tmp/{i}.png')
+                        #     plt.clf()
 
 
                         pred += [out_PS[i, 0].detach().squeeze().cpu().numpy() for i in range(out_PS.shape[0])]
                         gt += [psn[i, 0].numpy() for i in range(wf.shape[0])]
-                        break
+                      
                     elif opt.model_opt == 'conformer':
                         wf, psn, mask = data
                         out = model(wf.to(device))

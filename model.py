@@ -993,6 +993,10 @@ class GRADUATE(nn.Module):
             self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
             self.stft_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, dim_stft, conformer_class, d_ffn)
 
+        elif cross_attn_type == 0:
+            self.rep_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
+            self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class, d_ffn)
+
         # =========================================== #
         #                   Decoder                   #
         # =========================================== #    
@@ -1059,6 +1063,10 @@ class GRADUATE(nn.Module):
             crossattn_out = self.crossattn(rep_posEmb, out, out)
             stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
         
+        elif self.cross_attn_type == 0:
+            rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+            crossattn_out = self.crossattn(rep_posEmb, out, out)
+
         # decoder
         if self.decoder_type != 'None':
             for i, layer in enumerate(self.decoder):

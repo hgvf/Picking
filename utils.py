@@ -21,8 +21,12 @@ from tsfc_modules import TSFC_Unet
 from wmseg_dataparallel import BalancedDataParallel
 
 def load_dataset(opt):
-    cwbsn, tsmip, stead, cwbsn_noise = 0, 0, 0, 0
+    cwbsn, tsmip, stead, cwbsn_noise, instance = 0, 0, 0, 0, 0
     
+    if opt.dataset_opt == 'instance':
+        kwargs={'download_kwargs': {'basepath': '/home/weiwei/disk4/seismic_datasets/'}}
+        instance = sbd.InstanceCountsCombined(**kwargs)
+
     # loading datasets
     if opt.dataset_opt == 'stead' or opt.dataset_opt == 'all':
         # STEAD
@@ -30,10 +34,8 @@ def load_dataset(opt):
         kwargs={'download_kwargs': {'basepath': '/mnt/nas3/earthquake_dataset_large/script/STEAD/'}}
         stead = sbd.STEAD(**kwargs)
 
-        if opt.model_opt == 'real_GRADUATE':
-            stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True, magnitude=True)
-        else:
-            stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True)
+        # stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True, magnitude=True)
+        stead = apply_filter(stead, snr_threshold=opt.snr_threshold, s_wave=opt.s_wave, isStead=True)
 
     if opt.dataset_opt == 'cwbsn' or opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'all' or opt.dataset_opt == 'redpan' or opt.dataset_opt == 'prev_taiwan' or opt.dataset_opt == 'EEW':
         # CWBSN 
@@ -75,7 +77,7 @@ def load_dataset(opt):
 
         print('traces: ', len(cwbsn_noise))
 
-    return cwbsn, tsmip, stead, cwbsn_noise
+    return cwbsn, tsmip, stead, cwbsn_noise, instance
 
 def apply_filter(data, snr_threshold=-1, isCWBSN=False, level=-1, s_wave=False, isStead=False, isNoise=False, instrument='all', noise_sample=200000, magnitude=False):
     # Apply filter on seisbench.data class
@@ -139,6 +141,13 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
     #   5) Change dtype to float32
     #   6) Probabilistic: gaussian function
     
+    if opt.dataset_opt == 'instance':
+        p_phases = 'trace_P_arrival_sample'
+        s_phases = 'trace_S_arrival_sample'
+    else:
+        p_phases = 'trace_p_arrival_sample'
+        s_phases = 'trace_s_arrival_sample'
+
     if opt.model_opt == 'basicphaseAE':
         if test:
             augmentations = [
@@ -180,8 +189,6 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0)
             ]
     elif opt.model_opt == 'eqt':
-        p_phases = 'trace_p_arrival_sample'
-        s_phases = 'trace_s_arrival_sample'
         phase_dict = [p_phases, s_phases]
 
         if test:
@@ -198,7 +205,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 augmentations = [
                     sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
-                    sbg.VtoA(),
+                    # sbg.VtoA(),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
                     sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                     sbg.ChangeDtype(np.float32),
@@ -219,7 +226,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 augmentations = [
                     sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
                     sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
-                    sbg.VtoA(),
+                    # sbg.VtoA(),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
                     sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                     sbg.ChangeDtype(np.float32),
@@ -240,7 +247,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 augmentations = [
                     sbg.OneOf([sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"), sbg.NullAugmentation()],probabilities=[2, 1]),
                     sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
-                    sbg.VtoA(),
+                    # sbg.VtoA(),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
                     sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                     sbg.ChangeDtype(np.float32),
@@ -473,9 +480,6 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 sbg.ProbabilisticLabeller(label_columns=phase_dict, sigma=10, dim=0),
             ]
     elif opt.model_opt == 'GRADUATE':
-        p_phases = 'trace_p_arrival_sample'
-        s_phases = 'trace_s_arrival_sample'
-        
         if opt.label_type == 'all':
             phase_dict = [p_phases, s_phases]
         else:
@@ -497,7 +501,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 augmentations = [
                     sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
-                    sbg.VtoA(),
+                    # sbg.VtoA(),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std', keep_ori=True),
                     sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                     sbg.STFT(),
@@ -510,7 +514,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
             augmentations = [
                 sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                 sbg.RandomWindow(windowlen=3000, strategy="pad", low=100, high=3300),
-                sbg.VtoA(),
+                # sbg.VtoA(),
                 sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
                 sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                 sbg.STFT(),
@@ -534,7 +538,7 @@ def basic_augmentations(opt, phase_dict, ptime=None, test=False, EEW=False):
                 augmentations = [
                     sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.RandomWindow(windowlen=3000, strategy="pad", low=950, high=6000),
-                    sbg.VtoA(),
+                    # sbg.VtoA(),
                     sbg.Normalize(demean_axis=-1, amp_norm_axis=-1, amp_norm_type='std'),
                     sbg.Filter(N=5, Wn=[1, 10], btype='bandpass'),
                     sbg.STFT(),
@@ -1224,15 +1228,16 @@ def loss_fn(opt, pred, gt, device, task_loss=None, cur_epoch=None, intensity=Non
             # prediction: (batch, wavelength, 1)
             # ground-truth: (batch, wavelength)
 
-            loss_weights = [0.65, 0.32]
+            loss_weights = [0.65, 0.35]
             weights = torch.add(torch.mul(gt_seg, opt.loss_weight), 1).to(device)
             seg_bce_loss = F.binary_cross_entropy(input=pred_seg[:, :, 0], target=gt_seg.type(torch.FloatTensor).to(device), weight=weights, reduction=reduction)
             
-            n_seg = torch.FloatTensor([l.count(1) for l in gt_seg.tolist()]).unsqueeze(-1)
-            n_seg = n_seg.repeat(1, 3000).to(device)
-            seg_quantized_loss = F.l1_loss(input=pred_seg[:, :, 0], target=n_seg)
+            # n_seg = torch.FloatTensor([l.count(1) for l in gt_seg.tolist()]).unsqueeze(-1)
+            # n_seg = n_seg.repeat(1, 3000).to(device)
+            # seg_quantized_loss = F.l1_loss(input=pred_seg[:, :, 0], target=n_seg)
 
-            segmentation_loss = loss_weights[0] * seg_bce_loss + loss_weights[1] * seg_quantized_loss
+            # segmentation_loss = loss_weights[0] * seg_bce_loss + loss_weights[1] * seg_quantized_loss
+            segmentation_loss = seg_bce_loss
             # print(f"picking: {picking_loss}, segmentation: {segmentation_loss}")
 
             loss = opt.segmentation_ratio * segmentation_loss + (1-opt.segmentation_ratio) * picking_loss

@@ -77,7 +77,7 @@ def toLine(save_path, precision, recall, fscore, mean, variance):
         print(e)
 
 def set_generators(opt, ptime=None):
-    cwbsn, tsmip, stead, cwbsn_noise = load_dataset(opt)
+    cwbsn, tsmip, stead, cwbsn_noise, instance = load_dataset(opt)
 
     # split datasets
     if opt.dataset_opt == 'all':
@@ -104,6 +104,8 @@ def set_generators(opt, ptime=None):
         # test = tsmip_test + stead_test
     elif opt.dataset_opt == 'stead':
         _, dev, test = stead.train_dev_test()
+    elif opt.dataset_opt == 'instance':
+        _, dev, test = instance.train_dev_test()
     elif opt.dataset_opt == 'redpan' or opt.dataset_opt == 'taiwan':
         cwbsn_dev, cwbsn_test = cwbsn.dev(), cwbsn.test()
         tsmip_dev, tsmip_test = tsmip.dev(), tsmip.test()
@@ -131,13 +133,13 @@ def set_generators(opt, ptime=None):
     test_generator = sbg.GenericGenerator(test)
 
     # set generator with or without augmentations
-    phase_dict = ['trace_p_arrival_sample']
+    phase_dict = ['trace_P_arrival_sample']
     if not opt.allTest:
         ptime = opt.p_timestep  
     augmentations = augmentations = [
                     sbg.WindowAroundSample(phase_dict, samples_before=3000, windowlen=6000, selection="first", strategy="pad"),
                     sbg.FixedWindow(p0=3000-ptime, windowlen=3000, strategy='pad'),
-                    sbg.VtoA(),
+                    # sbg.VtoA(),
                     sbg.Normalize(demean_axis=-1, keep_ori=True),
                     sbg.Filter(N=5, Wn=[1, 10], btype='bandpass', keep_ori=True),
                     sbg.ChangeDtype(np.float32),
@@ -397,7 +399,7 @@ if __name__ == '__main__':
         level = str(opt.level)
 
     if not opt.allTest:
-        output_dir = os.path.join(output_dir, level)
+        output_dir = os.path.join(output_dir, opt.dataset_opt)
     else:
         output_dir = os.path.join(output_dir, f"allTest_{opt.dataset_opt}")
     
@@ -411,6 +413,8 @@ if __name__ == '__main__':
         subpath = subpath + '_' + str(opt.p_timestep)
     if opt.allTest:
         subpath = subpath + '_allCase_testing_' + str(opt.level)
+
+    subpath = f"{subpath}_{opt.threshold_short_window}_{opt.threshold_long_window}"
     subpath = subpath + '.log'
     print('logpath: ', subpath)
     log_path = os.path.join(output_dir, subpath)
