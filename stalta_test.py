@@ -7,6 +7,7 @@ import logging
 import pickle
 import json
 import bisect
+import matplotlib.pyplot as plt
 import requests
 from tqdm import tqdm
 
@@ -133,7 +134,7 @@ def set_generators(opt, ptime=None):
     test_generator = sbg.GenericGenerator(test)
 
     # set generator with or without augmentations
-    phase_dict = ['trace_P_arrival_sample']
+    phase_dict = ['trace_P_arrival_sample', 'trace_p_arrival_sample']
     if not opt.allTest:
         ptime = opt.p_timestep  
     augmentations = augmentations = [
@@ -270,6 +271,7 @@ def evaluation(pred, gt, snr_idx, snr_max_idx, intensity_idx, intensity_max_idx,
                 
                 pred_trigger = nearest
 
+        # print(f"gt_trigger: {gt_trigger}, pred_trigger: {pred_trigger}")
         left_edge = (gt_trigger - sample_tolerant) if (gt_trigger - sample_tolerant) >= 0 else 0
         right_edge = (gt_trigger + sample_tolerant) if (gt_trigger + sample_tolerant) <= 3000 else 2999
 
@@ -317,6 +319,7 @@ def inference(opt, test_loader, short_window, long_window, threshold_lambda):
     isREDPAN =  False
 
     with tqdm(test_loader) as epoch:
+        idx = 0
         for data in epoch:          
             try:
                 if not opt.dataset_opt == 'REDPAN_dataset':
@@ -333,13 +336,29 @@ def inference(opt, test_loader, short_window, long_window, threshold_lambda):
                         gt += [psn[i, 0] for i in range(wf.shape[0])]
 
                     else:
+                        # plt.subplot(211)
+                        # plt.plot(data['X'][0, :3].T)
+                        # plt.subplot(212)
+                        # plt.plot(data['y'][0].T)
+                        # plt.savefig(f"./tmp/stalta_{idx}.png")
+                        # plt.clf()
+
                         out = classic_sta_lta(data['X'][0, 0], short_window, long_window)
                         trigger = trigger_onset(out, threshold_lambda, 1)
 
                         pred += [trigger]
-                        target = data['y'][:, 0].squeeze().numpy()
+                        if opt.dataset_opt == 'stead':
+                            target = data['y'][0, 1].numpy()
+                        elif opt.dataset_opt == 'instance':
+                            target = data['y'][0, 0].numpy()
                         gt += [target]
-            except:
+                        
+                idx += 1
+                # if idx == 100:
+                #     break
+               
+            except Exception as e:
+                # print(e)
                 continue
             
     return pred, gt, snr_total, intensity_total
@@ -475,7 +494,10 @@ if __name__ == '__main__':
         logging.info('dataset: %s' %(opt.dataset_opt))
         
         print('Start testing...')
-        ptime_list = [750, 1500, 2000, 2500, 2750]
+        if opt.dataset_opt == 'stead' or opt.dataset_opt == 'instance':
+            ptime_list = [750, 1500, 2000, 2500, 2750]
+        else:
+            ptime_list = [750, 1500, 2000, 2500, 2750]
       
         for ptime in ptime_list:
             print('='*50)

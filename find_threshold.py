@@ -6,6 +6,7 @@ import math
 import logging
 import pickle
 import json
+import matplotlib.pyplot as plt
 import time
 import bisect
 import requests
@@ -56,9 +57,11 @@ def parse_args():
     parser.add_argument('--level', type=int, default=-1)
     parser.add_argument('--s_wave', type=bool, default=False)
     parser.add_argument('--instrument', type=str, default='all')
+    parser.add_argument('--location', type=int, default=-1)
     parser.add_argument('--EEW', type=bool, default=False)
+    parser.add_argument('--max_freq', type=int, default=32)
     parser.add_argument('--noise_sample', type=int, default=-1)
-    
+
     parser.add_argument('--EEW_allTest', type=bool, default=False)
     parser.add_argument("--device", type=str, default='cpu')
     parser.add_argument("--batch_size", type=int, default=100)
@@ -112,6 +115,20 @@ def parse_args():
     parser.add_argument('--seg_proj_type', type=str, default='crossattn')
     parser.add_argument('--recover_type', type=str, default='crossattn')
     parser.add_argument('--res_dec', type=bool, default=False)
+    parser.add_argument('--wavelength', type=int, default=3000)
+    parser.add_argument('--rep_query', type=bool, default=False)
+    parser.add_argument('--input_type', type=str, default='normal')
+    parser.add_argument('--stft_loss', type=bool, default=False)
+    parser.add_argument('--patch_crossattn', type=bool, default=False)
+    parser.add_argument('--stft_recovertype', type=str, default='crossattn')
+    parser.add_argument('--stft_residual', type=bool, default=False)
+    
+    # Ensemble_picker
+    parser.add_argument('--ensemble_opt', type=str, default='mean')
+    parser.add_argument('--freeze_picker', type=bool, default=False)
+    parser.add_argument('--eqt_path', type=str, default='tmp')
+    parser.add_argument('--graduate_path', type=str, default='tmp')
+    parser.add_argument('--redpan_path', type=str, default='tmp')
 
     opt = parser.parse_args()
 
@@ -399,7 +416,9 @@ def inference(opt, model, test_loader, device):
 
     model.eval()
     with tqdm(test_loader) as epoch:
-        for data in epoch:          
+        idx = 0
+        for data in epoch:  
+            idx += 1        
             if not opt.dataset_opt == 'REDPAN_dataset':
                 snr_total += calc_snr(data, isREDPAN)
                 intensity_total += calc_inten(data, isREDPAN)
@@ -472,7 +491,10 @@ def inference(opt, model, test_loader, device):
                         elif opt.model_opt == 'conformer_stft':
                             out = model(data['X'].to(device), stft=data['stft'].to(device).float())
                         elif opt.model_opt == 'GRADUATE':
-                            _, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                            if opt.stft_loss:
+                                _, out, _ = model(data['X'].to(device), stft=data['stft'].float().to(device))
+                            else:
+                                _, out = model(data['X'].to(device), stft=data['stft'].float().to(device))
                         elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm':
                             _, out, out_mag = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
                         elif opt.model_opt == 'GRADUATE_MAG_deStationary':
@@ -656,6 +678,10 @@ if __name__ == '__main__':
         subpath = subpath + '_' + opt.load_specific_model
     if opt.s_test:
         subpath = subpath + '_Swave'
+    if opt.instrument != 'all':
+        subpath = subpath + '_' + opt.instrument
+    if opt.location != -1:
+        subpath = subpath + '_' + str(opt.location)
 
     subpath = subpath + '.log'
     print('logpath: ', subpath)
@@ -806,8 +832,9 @@ if __name__ == '__main__':
         if opt.model_opt == 'real_GRADUATE':
             logging.info(f"Magnitude estimation -> abs_diff: {mag_abs_diff}, diff: {mag_diff}")
         logging.info('======================================================')
+        print(f'Best criteria -> type: {best_mode}, prob: {best_prob}, trigger: {best_trigger}, fscore: {best_fscore}')
 
-    if opt.do_test or opt.dataset_opt == 'stead' or opt.dataset_opt == 'REDPAN_dataset':
+    if opt.do_test or ((opt.dataset_opt == 'stead' or opt.dataset_opt == 'REDPAN_dataset' or opt.dataset_opt == 'instance') and not opt.allTest):
         if opt.do_test:
             best_mode = opt.threshold_type
             best_prob = opt.threshold_prob_start
@@ -858,10 +885,26 @@ if __name__ == '__main__':
         logging.info('dataset: %s' %(opt.dataset_opt))
         
         print('Start testing...')
-        if opt.EEW_allTest:
-            ptime_list = [2500, 2750]
-        else:
-            ptime_list = [750, 1500, 2000, 2500, 2750]
+        if opt.wavelength == 3000:
+            if opt.dataset_opt == 'stead' or opt.dataset_opt == 'instance':
+                ptime_list = [1500, 2000, 2500, 2750]
+            else:
+                ptime_list = [750, 1500, 2000, 2500, 2750]
+        elif opt.wavelength == 1000:
+            if opt.dataset_opt == 'stead' or opt.dataset_opt == 'instance':
+                ptime_list = [500, 750]
+            else:
+                ptime_list = [250, 500, 750]
+        elif opt.wavelength == 2000:
+            if opt.dataset_opt == 'stead' or opt.dataset_opt == 'instance':
+                ptime_list = [1000, 1500, 1750]
+            else:
+                ptime_list = [500, 1000, 1500, 1750]
+        elif opt.wavelength == 500:
+            if opt.dataset_opt == 'stead' or opt.dataset_opt == 'instance':
+                ptime_list = [300, 450]
+            else:
+                ptime_list = [150, 300, 450]
         
         best_mode = opt.threshold_type
         best_prob = opt.threshold_prob_start

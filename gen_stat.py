@@ -609,6 +609,8 @@ if __name__ == '__main__':
     parser.add_argument("--level", type=int, default=-1)
     parser.add_argument('--allTest', type=bool, default=False)
     parser.add_argument('--p_timestep', type=int)
+    parser.add_argument('--instrument', type=str, default='all')
+    parser.add_argument('--location', type=int, default=-1)
     opt = parser.parse_args()
 
     output_dir = os.path.join('./results', opt.save_path)
@@ -655,8 +657,13 @@ if __name__ == '__main__':
         if opt.level == -1:
             threshold_path = 'threshold_-1.log'
         else:
-            threshold_path = 'threshold_' + str(opt.level) + '.log'
-        with open(os.path.join(output_dir, threshold_path), 'r') as f:
+            threshold_path = 'threshold_' + str(opt.level)
+
+        if opt.instrument != 'all':
+            threshold_path = threshold_path + '_' + opt.instrument
+        if opt.location != -1:
+            threshold_path = threshold_path + '_' + opt.location
+        with open(os.path.join(output_dir, threshold_path + '.log'), 'r') as f:
             res = f.readlines()
 
         # generate statistical, box shape, and histogram

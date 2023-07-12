@@ -37,13 +37,14 @@ def parse_args():
     parser.add_argument("--device", type=str, default='cpu')
     parser.add_argument('--resume_training', type=bool, default=False)
     parser.add_argument('--recover_from_best', type=bool, default=False)
+    parser.add_argument('--pretrained_path', type=str, default='none')
+    parser.add_argument('--load_specific_model', type=str, default='model')
     parser.add_argument('--gradient_accumulation', type=int, default=1)
     parser.add_argument('--clip_norm', type=float, default=0.01)
     parser.add_argument('--patience', type=float, default=7)
     parser.add_argument('--noam', type=bool, default=False)
     parser.add_argument('--warmup_step', type=int, default=1500)
     parser.add_argument('--load_pretrained', type=bool, default=False)
-    parser.add_argument('--pretrained_path', type=str, default='tmp')
     parser.add_argument('--model_name', type=str, default='checkpoint_last')
 
     # save_path
@@ -62,10 +63,12 @@ def parse_args():
     parser.add_argument('--init_stage', type=int, default=0)
     parser.add_argument('--s_wave', type=bool, default=False)
     parser.add_argument('--instrument', type=str, default='all')
+    parser.add_argument('--location', type=int, default=-1)
     parser.add_argument('--EEW', type=bool, default=False)
     parser.add_argument('--samp_ratio', type=float, default=1.0)
     parser.add_argument('--special_aug', type=bool, default=False)
     parser.add_argument('--noise_sample', type=int, default=-1)
+    parser.add_argument('--max_freq', type=int, default=32)
  
     # data augmentations
     parser.add_argument('--gaussian_noise_prob', type=float, default=0.5)
@@ -122,8 +125,20 @@ def parse_args():
     parser.add_argument('--seg_proj_type', type=str, default='crossattn')
     parser.add_argument('--recover_type', type=str, default='crossattn')
     parser.add_argument('--res_dec', type=bool, default=False)
-    
-    parser.add_argument('--magnitude_ratio', type=float, default=0.25)
+    parser.add_argument('--wavelength', type=int, default=3000)
+    parser.add_argument('--rep_query', type=bool, default=False)
+    parser.add_argument('--input_type', type=str, default='normal')
+    parser.add_argument('--stft_loss', type=bool, default=False)
+    parser.add_argument('--patch_crossattn', type=bool, default=False)
+    parser.add_argument('--stft_recovertype', type=str, default='crossattn')
+    parser.add_argument('--stft_residual', type=bool, default=False)
+
+    # Ensemble_picker
+    parser.add_argument('--ensemble_opt', type=str, default='mean')
+    parser.add_argument('--freeze_picker', type=bool, default=False)
+    parser.add_argument('--eqt_path', type=str, default='tmp')
+    parser.add_argument('--graduate_path', type=str, default='tmp')
+    parser.add_argument('--redpan_path', type=str, default='tmp')
 
     opt = parser.parse_args()
 
@@ -173,7 +188,7 @@ def noam_optimizer(model, lr, warmup_step, device):
 def eqt_init_lr(epoch, optimizer, scheduler):
     lr = 1e-3
     
-    change_init_lr = [21, 41, 61, 91, 7, 8, 9]
+    change_init_lr = [21, 41, 61, 91]
     if epoch in change_init_lr:
         if epoch > 90:
             lr *= 0.5e-3
@@ -426,7 +441,19 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
 
             if opt.model_opt == 'RED_PAN':
                 if opt.aug:
-                    out = model(REDPAN_aug(data['X'])[:, :3].to(device))
+                    data['X'] = REDPAN_aug(data['X'])
+
+                    # plt.subplot(311)
+                    # plt.plot(data['X'][0, :3].T.cpu().numpy())
+                    # plt.title(data['X'].shape)
+                    # plt.subplot(312)
+                    # plt.plot(data['X'][0, 3:6].T.cpu().numpy())
+                    # plt.subplot(313)
+                    # plt.plot(data['X'][0, 6:].T.cpu().numpy())
+                    # plt.savefig(f"./tmp/{idx}.png")
+                    # plt.clf()
+
+                    out = model(data['X'][:, :3].to(device))
                 else:
                     out = model(data['X'][:, :3].to(device))
                 
@@ -449,7 +476,11 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
                 elif opt.model_opt == 'conformer_intensity':
                     out, out_MT = model(data['X'].to(device))
                 elif opt.model_opt == 'GRADUATE':
-                    out_seg, out = model(data['X'].to(device), stft=data['stft'].float().to(device))
+                    if opt.stft_loss:
+                        out_seg, out, out_stft = model(data['X'].to(device), stft=data['stft'].float().to(device))
+                    else:
+                        out_seg, out = model(data['X'].to(device), stft=data['stft'].float().to(device))
+
                 elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm':
                     out_seg, out, out_mag = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
                 elif opt.model_opt == 'GRADUATE_MAG_deStationary':
@@ -495,7 +526,10 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
                     if opt.label_type == 'p' or opt.label_type == 'other':
                         loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
                     elif opt.label_type == 'all':
-                        loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
+                        if opt.stft_loss:
+                            loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device, stft_intermediate=out_stft)
+                        else:
+                            loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
                 elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
                     loss = loss_fn(opt, pred=(out_seg, out, out_mag), gt=(data['seg'], data['y'], data['detections'], data['mag'], data['dis']), device=device)
                 elif opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'real_GRADUATE_noNorm' or opt.model_opt == 'real_GRADUATE_noNorm_double':
@@ -524,7 +558,7 @@ def train(model, optimizer, dataloader, valid_loader, device, cur_epoch, opt, ou
         train_loss = train_loss + loss.detach().cpu().item()*opt.gradient_accumulation
         train_loop.set_description(f"[Train Epoch {cur_epoch+1}/{opt.epochs}]")
         train_loop.set_postfix(loss=loss.detach().cpu().item()*opt.gradient_accumulation)
-
+        
     train_loss = train_loss / (len(dataloader))
     
     if opt.model_opt == 'RED_PAN':
@@ -577,13 +611,26 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
                 
                 if opt.model_opt == 'RED_PAN':
                     if opt.aug:
-                        out = model(REDPAN_aug(data['X'])[:, :3].to(device))
+                        data['X'] = REDPAN_aug(data['X'])
+
+                        # plt.subplot(311)
+                        # plt.plot(data['X'][0, :3].T.cpu().numpy())
+                        # plt.title(data['X'].shape)
+                        # plt.subplot(312)
+                        # plt.plot(data['X'][0, 3:6].T.cpu().numpy())
+                        # plt.subplot(313)
+                        # plt.plot(data['X'][0, 6:].T.cpu().numpy())
+                        # plt.savefig(f"./tmp/{idx}.png")
+                        # plt.clf()
+
+                        out = model(data['X'][:, :3].to(device))
                     else:
                         out = model(data['X'][:, :3].to(device))
                     
                     loss, PS_loss, M_loss = loss_fn(opt, out, (data['X'][:, 3:6], data['X'][:, 6:]), device, redpan_loss, cur_epoch)
                     task1_loss += PS_loss.cpu().item()
                     task2_loss += M_loss.cpu().item()
+
                 else:
                     if opt.special_aug and Taiwan_aug:
                         data['X'], data['y'] = REDPAN_augmentation(data['X'], data['y'])
@@ -593,7 +640,10 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
                     elif opt.model_opt == 'conformer_intensity':
                         out, out_MT = model(data['X'].to(device))
                     elif opt.model_opt == 'GRADUATE':
-                        out_seg, out = model(data['X'].to(device), stft=data['stft'].to(device).float())
+                        if opt.stft_loss:
+                            out_seg, out, out_stft = model(data['X'].to(device), stft=data['stft'].float().to(device))
+                        else:
+                            out_seg, out = model(data['X'].to(device), stft=data['stft'].float().to(device))
                     elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm':
                         out_seg, out, out_mag = model(data['X'].to(device), stft=data['stft'].float().to(device), fft=data['fft'].float().to(device))
                     elif opt.model_opt == 'GRADUATE_MAG_deStationary':
@@ -619,7 +669,10 @@ def valid(model, dataloader, device, cur_epoch, opt, redpan_loss=None, Taiwan_au
                         if opt.label_type == 'p' or opt.label_type == 'other':
                             loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y']), device=device)
                         elif opt.label_type == 'all':
-                            loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
+                            if opt.stft_loss:
+                                loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device, stft_intermediate=out_stft)
+                            else:
+                                loss = loss_fn(opt, pred=(out_seg, out), gt=(data['seg'], data['y'], data['detections']), device=device)
                     elif opt.model_opt == 'GRADUATE_MAG' or opt.model_opt == 'GRADUATE_MAG_noNorm' or opt.model_opt == 'GRADUATE_MAG24' or opt.model_opt == 'GRADUATE_MAG_deStationary':
                         loss = loss_fn(opt, pred=(out_seg, out, out_mag), gt=(data['seg'], data['y'], data['detections'], data['mag'], data['dis']), device=device)
                     elif opt.model_opt == 'real_GRADUATE' or opt.model_opt == 'real_GRADUATE_noNorm' or opt.model_opt == 'real_GRADUATE_noNorm_double':
@@ -755,6 +808,15 @@ if __name__ == '__main__':
                 PS_loss = pickle.load(f)
             with open(os.path.join(output_dir, "M_loss.pkl"), 'rb') as f:
                 M_loss = pickle.load(f)
+    elif opt.pretrained_path != 'none':
+        logging.info('Loading pretrained checkpoint... %s' %(opt.pretrained_path))
+
+        print('Loading pretrained checkpoint...', opt.pretrained_path)
+        checkpoint = torch.load(f"./results/{opt.pretrained_path}/{opt.load_specific_model}.pt", map_location=device)
+
+        model.load_state_dict(checkpoint['model'])
+        init_epoch = 0
+        min_loss = 100000
     else:
         init_epoch = 0
         min_loss = 100000

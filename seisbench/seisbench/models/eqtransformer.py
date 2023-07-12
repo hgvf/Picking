@@ -78,7 +78,8 @@ class EQTransformer(WaveformModel):
         self.classes = classes
         self.lstm_blocks = lstm_blocks
         self.drop_rate = drop_rate
-
+        self.in_samples = in_samples
+        
         # collect the modules name that should apply Xavier norm, and zero initialization
         xavierNorm, zero_init_layer = [], []
         try:

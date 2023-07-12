@@ -109,7 +109,8 @@ def MMWA(data):
             newdata[i, 5] = torch.cat((psn_out_last, torch.ones(3000-out.shape[-1])), dim=-1)
             newdata[i, 6] = torch.cat((mask_out, torch.zeros(3000-out.shape[-1])), dim=-1)
             newdata[i, -1] = torch.cat((mask_out_last, torch.ones(3000-out.shape[-1])), dim=-1)
-        except:
+        except Exception as e:
+            # print('MMWA: ', e)
             newdata[i] = data[i]
 
     return newdata
@@ -160,7 +161,8 @@ def EEWA(data):
             newdata[i, 6] = torch.cat((mask_out, torch.zeros(3000-out.shape[-1])), dim=-1)
             newdata[i, -1] = torch.cat((mask_out_last, torch.ones(3000-out.shape[-1])), dim=-1)
             
-        except:
+        except Exception as e:
+            # print('EEWA: ', e)
             newdata[i]= data[i]
 
     return newdata

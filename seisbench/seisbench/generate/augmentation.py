@@ -923,7 +923,7 @@ class CharStaLta:
             state_dict['ori_X'] = (ori_waveforms, ori_metadata)
 
 class STFT:
-    def __init__(self, axis=-1, key="X", imag=False, dim_spectrogram='1D'):
+    def __init__(self, axis=-1, key="X", imag=False, dim_spectrogram='1D', max_freq=-1):
         if isinstance(key, str):
             self.key = (key, key)
         else:
@@ -931,17 +931,21 @@ class STFT:
 
         self.dim_spectrogram = dim_spectrogram
         self.imag = imag
+        self.max_freq = max_freq
 
     def __call__(self, state_dict):
         waveforms, metadata = state_dict[self.key[0]]
 
         acc = np.sqrt(waveforms[0]**2+waveforms[1]**2+waveforms[2]**2)
         f, t, Zxx = scipy.signal.stft(acc, nperseg=20, nfft=64)
-        real = np.abs(Zxx.real).T
+        real = np.abs(Zxx.real)
+
+        if self.max_freq != -1:
+            real = real[:self.max_freq]
 
         # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
         # 移除一個 frequency component，將頻率維度湊到偶數個
-        real = np.expand_dims(real[:, :-1], axis=0)
+        real = np.expand_dims(real.T, axis=0)
 
         state_dict[self.key[1]] = (waveforms, metadata)
         state_dict['stft'] = real
@@ -1046,7 +1050,7 @@ class Intensity:
 
 
 class TemporalSegmentation:
-    def __init__(self, n_segmentation, axis=-1, key='X', step=1):
+    def __init__(self, n_segmentation, axis=-1, key='X', step=1, null=False):
         if isinstance(key, str):
             self.key = (key, key)
         else:
@@ -1055,34 +1059,41 @@ class TemporalSegmentation:
         self.n_segmentation = n_segmentation
         self.axis = axis
         self.step = step
+        self.null = null
 
     def __call__(self, state_dict):
         waveforms, metadata = state_dict[self.key[0]]
 
-        # using 12-dim vector for temporal segmentation
-        out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
+        if not self.null:
+            # using 12-dim vector for temporal segmentation
+            out = TopDown(waveforms.copy(), self.n_segmentation-1, self.step)
 
-        if out[-1] != (self.n_segmentation-1):
-            out = TopDown(waveforms.copy(), out[-1], self.step)
+            if out[-1] != (self.n_segmentation-1):
+                out = TopDown(waveforms.copy(), out[-1], self.step)
 
-        seg_edge = sorted(out[0])
-        
-        # labeled the ground-truth vector
-        gt = np.zeros(waveforms.shape[-1])
-        for edge in seg_edge:
-            if edge == waveforms.shape[-1] - 1:
-                continue
-        
-            gt += gen_tar_func(waveforms.shape[-1], edge, 10)
-        
-        # the values in gt vector always <= 
-        gt[gt > 1] = 1
+            seg_edge = sorted(out[0])
+            
+            # labeled the ground-truth vector
+            gt = np.zeros(waveforms.shape[-1])
+            for edge in seg_edge:
+                if edge == waveforms.shape[-1] - 1:
+                    continue
+            
+                gt += gen_tar_func(waveforms.shape[-1], edge, 10)
+            
+            # the values in gt vector always <= 
+            gt[gt > 1] = 1
 
-        # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
-        gt = np.expand_dims(gt, axis=0)
-        
-        state_dict[self.key[1]] = (waveforms, metadata)
-        state_dict['seg'] = gt
+            # 因為 generator 只會取每個 key 的第一個值，ex. ['X'] 取第一個就會只取到波型資料，而把 metadata 刪掉
+            gt = np.expand_dims(gt, axis=0)
+            
+            state_dict[self.key[1]] = (waveforms, metadata)
+            state_dict['seg'] = gt
+        else:
+            state_dict[self.key[1]] = (waveforms, metadata)
+
+            gt = np.zeros(waveforms.shape[-1])
+            state_dict['seg'] = np.expand_dims(gt, axis=0)
 
 class Magnitude:
     def __init__(self, key='X', p_arrival_sample='trace_p_arrival_sample', s_arrival_sample='trace_s_arrival_sample'):

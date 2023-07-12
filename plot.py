@@ -40,6 +40,7 @@ def parse_args():
     parser.add_argument('--start_idx', type=int, default=0)
     parser.add_argument('--p_timestep', type=int, default=750)
     parser.add_argument('--snr_threshold', type=float, default=-1)
+    parser.add_argument('--load_specific_model', type=str, default='None')
     
     # dataset hyperparameters
     parser.add_argument('--aug', type=bool, default=False)
@@ -439,7 +440,12 @@ if __name__ == '__main__':
         model.load_state_dict(checkpoint['model'], strict=False)
     else:
         output_dir = os.path.join('./results', opt.save_path)
-        model_path = os.path.join(output_dir, 'model.pt')
+
+        if opt.load_specific_model != 'None':
+            print('loading ', opt.load_specific_model)
+            model_path = os.path.join(model_dir, opt.load_specific_model+'.pt')
+        else:
+            model_path = os.path.join(output_dir, 'model.pt')
         checkpoint = torch.load(model_path, map_location=device)
         model = load_my_state_dict(model, checkpoint)
 
@@ -526,7 +532,9 @@ if __name__ == '__main__':
                         if opt.label_type == 'p':
                             out = out.detach().squeeze().cpu().numpy()
                         elif opt.label_type == 'other':
-                            out = out[:, :, 0].detach().squeeze().cpu().numpy()   
+                            out = out[:, :, 0].detach().squeeze().cpu().numpy()  
+                        elif opt.label_type == 'all':
+                            out = out[1].squeeze().detach().cpu().numpy() 
                     
                     gt = data['y'][0, 0]
                     
