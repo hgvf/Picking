@@ -930,10 +930,10 @@ class AntiCopy_Conformer(nn.Module):
         return out
 
 class GRADUATE(nn.Module):
-    def __init__(self, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, 
+    def __init__(self, ablation, conformer_class, d_ffn, nhead, d_model, enc_layers, dec_layers, norm_type, l, 
                  cross_attn_type, seg_proj_type='crossattn', encoder_type='conformer', decoder_type='crossattn', 
                  rep_KV=True, label_type='p', recover_type="crossattn", wavelength=3000, rep_query=False, input_type='normal',
-                 stft_loss=False, patch_crossattn=False, max_freq=32, stft_recovertype='crossattn', stft_residual=False):
+                 stft_loss=False, patch_crossattn=False, max_freq=32, stft_recovertype='crossattn', dualDomain_type='concat', stft_residual=False):
         super(GRADUATE, self).__init__()
         
         dim_stft = max_freq
@@ -951,25 +951,28 @@ class GRADUATE(nn.Module):
         self.stft_recovertype = stft_recovertype
         self.stft_residual = stft_residual
         self.recover_type = recover_type
+        self.dualDomain_type = dualDomain_type
+        self.ablation = ablation
 
         # down-sample layer
-        self.input_type = input_type
-        if input_type == 'normal':
-            self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
-        elif input_type == 'stft':
-            self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers, subsample=False)
-        elif input_type == 'raw':
-            self.subsample = nn.Sequential(nn.Conv1d(d_model, d_ffn, kernel_size=3, stride=2),
-                                           nn.ReLU(),
-                                           nn.Conv1d(d_ffn, d_ffn, kernel_size=3, stride=2),
-                                           nn.ReLU())
-            self.conformer = Conformer(num_classes=conformer_class, input_dim=d_ffn, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers, subsample=False)
-            
-        if seg_proj_type == 'crossattn':
-            self.seg_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
-            # self.seg_crossattn = cross_attn(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class)
-            self.seg_crossattn = cross_attn_layer(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class, conformer_class=conformer_class, d_ffn=d_ffn)
-            self.seg_projector = nn.Linear(conformer_class, 1)
+        if ablation != 'time':
+            self.input_type = input_type
+            if input_type == 'normal':
+                self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers)
+            elif input_type == 'stft':
+                self.conformer = Conformer(num_classes=conformer_class, input_dim=d_model, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers, subsample=False)
+            elif input_type == 'raw':
+                self.subsample = nn.Sequential(nn.Conv1d(d_model, d_ffn, kernel_size=3, stride=2),
+                                            nn.ReLU(),
+                                            nn.Conv1d(d_ffn, d_ffn, kernel_size=3, stride=2),
+                                            nn.ReLU())
+                self.conformer = Conformer(num_classes=conformer_class, input_dim=d_ffn, encoder_dim=d_ffn, num_attention_heads=nhead, num_encoder_layers=enc_layers, subsample=False)
+                
+            if seg_proj_type == 'crossattn':
+                self.seg_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
+                # self.seg_crossattn = cross_attn(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class)
+                self.seg_crossattn = cross_attn_layer(nhead=nhead, d_k=conformer_class//nhead, d_v=conformer_class//nhead, d_model=conformer_class, conformer_class=conformer_class, d_ffn=d_ffn)
+                self.seg_projector = nn.Linear(conformer_class, 1)
 
         self.sigmoid = nn.Sigmoid()
         self.wavelength = wavelength
@@ -1020,34 +1023,50 @@ class GRADUATE(nn.Module):
             self.stft_pos_emb = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, dim_stft, conformer_class, d_ffn)
 
         elif cross_attn_type == 4 :
-            if stft_recovertype == 'crossattn':
-                self.stft_posEmb = PositionalEncoding(dim_stft, max_len=wavelength//4-1, return_vec=True)
-                self.stft_pos_emb = cross_attn_layer(nhead, dim_stft//nhead, dim_stft//nhead, dim_stft, conformer_class, d_ffn)
-            elif stft_recovertype == 'conv':
-                self.stft_conv = nn.Sequential(nn.Upsample(scale_factor=1.5),
-                                                nn.Conv1d(dim_stft, 16, kernel_size=5, padding='same'),
-                                                nn.ReLU(),
-                                                nn.Upsample(scale_factor=1.5),
-                                                nn.Conv1d(16, 24, kernel_size=5, padding='same'),
-                                                nn.ReLU(),
-                                                nn.Upsample(wavelength//4-1),
-                                                nn.Conv1d(24, 32, kernel_size=7, padding='same'),
-                                                nn.ReLU())
-                self.stft_proj = nn.Sequential(nn.Linear(32, conformer_class), 
-                                                nn.ReLU())
+            if ablation != 'time-frequency':
+                if stft_recovertype == 'crossattn':
+                    self.stft_posEmb = PositionalEncoding(dim_stft, max_len=wavelength//4-1, return_vec=True)
+                    self.stft_pos_emb = cross_attn_layer(nhead, dim_stft//nhead, dim_stft//nhead, dim_stft, conformer_class, d_ffn)
+                elif stft_recovertype == 'conv':
+                    self.stft_conv = nn.Sequential(nn.Upsample(scale_factor=1.5),
+                                                    nn.Conv1d(dim_stft, 16, kernel_size=5, padding='same'),
+                                                    nn.ReLU(),
+                                                    nn.Upsample(scale_factor=1.5),
+                                                    nn.Conv1d(16, 24, kernel_size=5, padding='same'),
+                                                    nn.ReLU(),
+                                                    nn.Upsample(wavelength//4-1),
+                                                    nn.Conv1d(24, 32, kernel_size=7, padding='same'),
+                                                    nn.ReLU())
+                    self.stft_proj = nn.Sequential(nn.Linear(32, conformer_class), 
+                                                    nn.ReLU())
+            if ablation != 'time' and ablation != 'time-frequency':
+                if dualDomain_type == 'crossattn':
+                    self.crossattn = cross_attn_layer(nhead, conformer_class//nhead, conformer_class//nhead, conformer_class, conformer_class*2, d_ffn)
+
             if recover_type == 'crossattn':
                 self.stft_rep_concat_posEmb = PositionalEncoding(conformer_class*2, max_len=wavelength, return_vec=True)            
                 self.stft_rep_concat_emb = cross_attn_layer(nhead, conformer_class*2//nhead, conformer_class*2//nhead, conformer_class*2, conformer_class, d_ffn)
             elif recover_type == 'conv':
-                self.recover_conv = nn.Sequential(nn.Upsample(scale_factor=2),
-                                                    nn.Conv1d(conformer_class*2, conformer_class*3, kernel_size=5, padding='same'),
-                                                    nn.ReLU(),
-                                                    nn.Upsample(scale_factor=2),
-                                                    nn.Conv1d(conformer_class*3, conformer_class*4, kernel_size=7, padding='same'),
-                                                    nn.ReLU(),
-                                                    nn.Upsample(wavelength),
-                                                    nn.Conv1d(conformer_class*4, conformer_class, kernel_size=7, padding='same'),
-                                                    nn.ReLU())
+                if ablation != 'time' and ablation != 'time-frequency':
+                    self.recover_conv = nn.Sequential(nn.Upsample(scale_factor=2),
+                                                        nn.Conv1d(conformer_class*2, conformer_class*3, kernel_size=5, padding='same'),
+                                                        nn.ReLU(),
+                                                        nn.Upsample(scale_factor=2),
+                                                        nn.Conv1d(conformer_class*3, conformer_class*4, kernel_size=7, padding='same'),
+                                                        nn.ReLU(),
+                                                        nn.Upsample(wavelength),
+                                                        nn.Conv1d(conformer_class*4, conformer_class, kernel_size=7, padding='same'),
+                                                        nn.ReLU())
+                else:
+                    self.recover_conv = nn.Sequential(nn.Upsample(scale_factor=2),
+                                                        nn.Conv1d(conformer_class, conformer_class*2, kernel_size=5, padding='same'),
+                                                        nn.ReLU(),
+                                                        nn.Upsample(scale_factor=2),
+                                                        nn.Conv1d(conformer_class*2, conformer_class*3, kernel_size=7, padding='same'),
+                                                        nn.ReLU(),
+                                                        nn.Upsample(wavelength),
+                                                        nn.Conv1d(conformer_class*3, conformer_class, kernel_size=7, padding='same'),
+                                                        nn.ReLU())
 
         elif cross_attn_type == 0:
             self.rep_posEmb = PositionalEncoding(conformer_class, max_len=wavelength, return_vec=True)
@@ -1085,23 +1104,24 @@ class GRADUATE(nn.Module):
         # wave: (batch, 3000, 12)
         wave = wave.permute(0,2,1)
     
-        if self.input_type == 'normal':
-            out, _ = self.conformer(wave, self.wavelength)
-        elif self.input_type == 'stft':
-            out, _ = self.conformer(stft, stft.size(1))
-        elif self.input_type == 'raw':
-            out = self.subsample(wave)
-            out, _ = self.conformer(out.permute(0,2,1), self.wavelength)
+        if self.ablation != 'time':
+            if self.input_type == 'normal':
+                out, _ = self.conformer(wave, self.wavelength)
+            elif self.input_type == 'stft':
+                out, _ = self.conformer(stft, stft.size(1))
+            elif self.input_type == 'raw':
+                out = self.subsample(wave)
+                out, _ = self.conformer(out.permute(0,2,1), self.wavelength)
 
-        # temporal segmentation
-        if self.seg_proj_type == 'crossattn':
-            seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
-            seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
-            seg_out = self.seg_projector(seg_crossattn_out)
-            seg_out = self.sigmoid(seg_out)
-        else:
-            seg_out = 0.0
-        
+            # temporal segmentation
+            if self.seg_proj_type == 'crossattn':
+                seg_pos_emb = self.seg_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+                seg_crossattn_out = self.seg_crossattn(seg_pos_emb, out, out)
+                seg_out = self.seg_projector(seg_crossattn_out)
+                seg_out = self.sigmoid(seg_out)
+            else:
+                seg_out = 0.0
+            
         # cross_attention
         if self.cross_attn_type == 1:
             stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
@@ -1144,40 +1164,51 @@ class GRADUATE(nn.Module):
             stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
         
         elif self.cross_attn_type == 4:
-            if self.stft_recovertype == 'crossattn':
-                stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
-                stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
-            elif self.stft_recovertype == 'conv':
-                stft_out = self.stft_proj(self.stft_conv(stft.permute(0,2,1)).permute(0,2,1))
+            if self.ablation != 'time-frequency':
+                if self.stft_recovertype == 'crossattn':
+                    stft_posEmb = self.stft_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
+                    stft_out = self.stft_pos_emb(stft_posEmb, stft, stft)
+                elif self.stft_recovertype == 'conv':
+                    stft_out = self.stft_proj(self.stft_conv(stft.permute(0,2,1)).permute(0,2,1))
 
             # concat encoded representation with stft
-            concat_rep = torch.cat((out, stft_out), dim=-1)
+            if self.ablation != 'time' and self.ablation != 'time-frequency':
+                if self.dualDomain_type == 'concat':
+                    concat_rep = torch.cat((out, stft_out), dim=-1)
+                elif self.dualDomain_type == 'crossattn':
+                    concat_rep = self.crossattn(stft_out, out, out)
+
             if self.recover_type == 'crossattn':
                 stft_rep_concat_posEmb = self.stft_rep_concat_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
                 crossattn_out = self.stft_rep_concat_emb(stft_rep_concat_posEmb, concat_rep, concat_rep)
             elif self.recover_type == 'conv':
+                if self.ablation == 'time':
+                    concat_rep = stft_out
+                elif self.ablation == 'time-frequency':
+                    concat_rep = out
+
                 crossattn_out = self.recover_conv(concat_rep.permute(0,2,1)).permute(0,2,1)
-        
+
         elif self.cross_attn_type == 0:
             rep_posEmb = self.rep_posEmb(wave).unsqueeze(0).repeat(wave.size(0), 1, 1)
             crossattn_out = self.crossattn(rep_posEmb, out, out)
 
         # decoder
-        if self.decoder_type != 'None':
+        if self.decoder_type != 'none':
             for i, layer in enumerate(self.decoder):
                 if i == 0:
-                    if self.rep_KV:
-                        dec_out = layer(crossattn_out, out, out)
-                    else:
+                    if not self.rep_KV or self.ablation == 'time':
                         dec_out = layer(crossattn_out, crossattn_out, crossattn_out)
-                else:
-                    if self.rep_KV:
-                        dec_out = layer(dec_out, out, out)
                     else:
+                        dec_out = layer(crossattn_out, out, out)
+                else:
+                    if not self.rep_KV or self.ablation == 'time':
                         dec_out = layer(dec_out, dec_out, dec_out)
+                    else:
+                        dec_out = layer(dec_out, out, out)
         else:
             dec_out = crossattn_out
-
+        
         if self.cross_attn_type == 3:
             dec_out = self.stft_rep(stft_out, dec_out, dec_out)
             
@@ -1190,6 +1221,9 @@ class GRADUATE(nn.Module):
             for layer in self.output:
                 out.append(self.output_actfn(layer(dec_out)))
       
+        if self.ablation == 'time':
+            seg_out = 0
+
         if not self.stft_loss:
             return seg_out, out
         else:

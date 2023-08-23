@@ -69,7 +69,8 @@ def parse_args():
     parser.add_argument('--special_aug', type=bool, default=False)
     parser.add_argument('--noise_sample', type=int, default=-1)
     parser.add_argument('--max_freq', type=int, default=32)
- 
+    parser.add_argument("--filter_instance", type=bool, default=False)
+
     # data augmentations
     parser.add_argument('--gaussian_noise_prob', type=float, default=0.5)
     parser.add_argument('--channel_dropout_prob', type=float, default=0.3)
@@ -132,6 +133,8 @@ def parse_args():
     parser.add_argument('--patch_crossattn', type=bool, default=False)
     parser.add_argument('--stft_recovertype', type=str, default='crossattn')
     parser.add_argument('--stft_residual', type=bool, default=False)
+    parser.add_argument('--dualDomain_type', type=str, default='concat')
+    parser.add_argument('--ablation', type=str, default='none')
 
     # Ensemble_picker
     parser.add_argument('--ensemble_opt', type=str, default='mean')
@@ -215,12 +218,13 @@ def split_dataset(opt, return_dataset=False):
         tsmip_train, tsmip_dev, _ = tsmip.train_dev_test()
         stead_train, stead_dev, _ = stead.train_dev_test()
         cwbsn_noise_train, cwbsn_noise_dev, _ = cwbsn_noise.train_dev_test()
+        instance_train, instance_dev, _ = instance.train_dev_test()
 
         if opt.dataset_opt == 'redpan':
             stead_train.filter(stead_train.metadata.index <= 76500)
 
-        train = cwbsn_train + tsmip_train + stead_train + cwbsn_noise_train
-        dev = cwbsn_dev + tsmip_dev + stead_dev + cwbsn_noise_dev
+        train = cwbsn_train + tsmip_train + stead_train + cwbsn_noise_train + instance_train
+        dev = cwbsn_dev + tsmip_dev + stead_dev + cwbsn_noise_dev + instance_dev
     elif opt.dataset_opt == 'taiwan' or opt.dataset_opt == 'redpan':        
         cwbsn_train, cwbsn_dev, _ = cwbsn.train_dev_test()
         tsmip_train, tsmip_dev, _ = tsmip.train_dev_test()

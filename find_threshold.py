@@ -61,7 +61,7 @@ def parse_args():
     parser.add_argument('--EEW', type=bool, default=False)
     parser.add_argument('--max_freq', type=int, default=32)
     parser.add_argument('--noise_sample', type=int, default=-1)
-
+    parser.add_argument("--filter_instance", type=bool, default=False)
     parser.add_argument('--EEW_allTest', type=bool, default=False)
     parser.add_argument("--device", type=str, default='cpu')
     parser.add_argument("--batch_size", type=int, default=100)
@@ -122,6 +122,8 @@ def parse_args():
     parser.add_argument('--patch_crossattn', type=bool, default=False)
     parser.add_argument('--stft_recovertype', type=str, default='crossattn')
     parser.add_argument('--stft_residual', type=bool, default=False)
+    parser.add_argument('--dualDomain_type', type=str, default='concat')
+    parser.add_argument('--ablation', type=str, default='none')
     
     # Ensemble_picker
     parser.add_argument('--ensemble_opt', type=str, default='mean')
@@ -287,9 +289,10 @@ def set_generators(opt, ptime=None):
         tsmip_dev, tsmip_test = tsmip.dev(), tsmip.test()
         stead_dev, stead_test = stead.dev(), stead.test()
         cwbsn_noise_dev, cwbsn_noise_test = cwbsn_noise.dev(), cwbsn_noise.test()
+        instance_train, instance_dev, _ = instance.train_dev_test()
 
-        dev = cwbsn_dev + tsmip_dev + stead_dev + cwbsn_noise_dev
-        test = cwbsn_test + tsmip_test + stead_test + cwbsn_noise_test
+        train = cwbsn_train + tsmip_train + stead_train + cwbsn_noise_train + instance_train
+        dev = cwbsn_dev + tsmip_dev + stead_dev + cwbsn_noise_dev + instance_dev
     elif opt.dataset_opt == 'cwbsn':
         cwbsn_dev, cwbsn_test = cwbsn.dev(), cwbsn.test()
         stead_dev, stead_test = stead.dev(), stead.test()
@@ -328,6 +331,8 @@ def set_generators(opt, ptime=None):
 
         dev = cwbsn_dev + tsmip_dev
         test = cwbsn_test + tsmip_test
+    elif opt.dataset_opt == 'cwb_noise':
+        dev, test = cwbsn_noise.dev(), cwbsn_noise.test()
 
     print(f'total traces -> dev: {len(dev)}, test: {len(test)}')
 
@@ -575,7 +580,7 @@ def inference(opt, model, test_loader, device):
                         else:
                             pred += [out]
                             gt += [target]
-    
+
     return pred, gt, snr_total, intensity_total, mag, dis
 
 def score(pred, gt, snr_total, intensity_total, mode, opt, threshold_prob, threshold_trigger, isTest=False):
@@ -663,9 +668,6 @@ if __name__ == '__main__':
         output_dir = os.path.join(output_dir, level)
     else:
         output_dir = os.path.join(output_dir, f"allTest_{opt.dataset_opt}")
-    
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
 
     subpath = 'threshold'
     if opt.level != -1:
@@ -680,8 +682,13 @@ if __name__ == '__main__':
         subpath = subpath + '_Swave'
     if opt.instrument != 'all':
         subpath = subpath + '_' + opt.instrument
+        output_dir = f"{output_dir}_{opt.instrument}"
     if opt.location != -1:
         subpath = subpath + '_' + str(opt.location)
+        output_dir = f"{output_dir}_{opt.location}"
+    
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
 
     subpath = subpath + '.log'
     print('logpath: ', subpath)
@@ -716,7 +723,9 @@ if __name__ == '__main__':
             print('creating dataloaders')
             dev_loader = DataLoader(dev_set, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
             test_loader = DataLoader(test_set, batch_size=opt.batch_size, shuffle=False, num_workers=opt.workers)
-
+        
+        logging.info('dev: %d, test: %d' %(len(dev_loader)*opt.batch_size, len(test_loader)*opt.batch_size))
+    
     # load model
     model = load_model(opt, device)
 
@@ -730,9 +739,10 @@ if __name__ == '__main__':
         else:
             print('loading last checkpoint')
             model_path = os.path.join(model_dir, 'checkpoint_last.pt')
-
+ 
         checkpoint = torch.load(model_path, map_location=device)
         model.load_state_dict(checkpoint['model'], strict=False)
+        # model.load_state_dict(checkpoint, strict=False)
     else:
         model_path = os.path.join(model_dir, 'model.pt')
         checkpoint = torch.load("/mnt/disk4/weiwei/newstead11.pt", map_location=device)

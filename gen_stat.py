@@ -611,6 +611,8 @@ if __name__ == '__main__':
     parser.add_argument('--p_timestep', type=int)
     parser.add_argument('--instrument', type=str, default='all')
     parser.add_argument('--location', type=int, default=-1)
+    parser.add_argument('--load_specific_model', type=str, default='None')
+    parser.add_argument('--dataset_opt', type=str)
     opt = parser.parse_args()
 
     output_dir = os.path.join('./results', opt.save_path)
@@ -627,7 +629,7 @@ if __name__ == '__main__':
 
         output_dir = os.path.join(output_dir, level)
     else:
-        output_dir = os.path.join(output_dir, 'allTest_taiwan')
+        output_dir = os.path.join(output_dir, f'allTest_{opt.dataset_opt}')
         output_dir = os.path.join(output_dir, str(opt.p_timestep))
 
     # snr_level = list(np.arange(0.0, 3.5, 0.25)) + list(np.arange(3.5, 5.5, 0.5))
@@ -663,6 +665,8 @@ if __name__ == '__main__':
             threshold_path = threshold_path + '_' + opt.instrument
         if opt.location != -1:
             threshold_path = threshold_path + '_' + opt.location
+        if opt.load_specific_model != 'None':
+            threshold_path = f"{threshold_path}_{opt.load_specific_model}"
         with open(os.path.join(output_dir, threshold_path + '.log'), 'r') as f:
             res = f.readlines()
 
